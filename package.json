@@ -1,0 +1,22 @@
+{
+  "name": "netease-cover-downloader",
+  "version": "1.0.0",
+  "description": "A local, read-only NetEase Cloud Music cover art downloader with a browser UI.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js --open",
+    "start:no-open": "node server.js",
+    "test": "node --test",
+    "check": "node --check core.js && node --check server.js && node --check public/app.js && node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "netease-cloud-music",
+    "cover-downloader",
+    "album-art",
+    "nodejs"
+  ],
+  "license": "MIT"
+}
