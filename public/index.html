@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#171716" />
     <title>音乐封面下载器</title>
-    <link rel="stylesheet" href="/styles.css?v=20260921-9" />
+    <link rel="stylesheet" href="/styles.css?v=20260921-10" />
   </head>
   <body>
     <header class="topbar">
@@ -19,7 +19,7 @@
         </span>
         <div>
           <h1>音乐封面下载器</h1>
-          <p>支持网易云音乐与 QQ 音乐分享歌单</p>
+          <p>支持网易云音乐、QQ 音乐与 Apple Music 分享歌单</p>
         </div>
       </div>
       <div class="account-area">
@@ -49,7 +49,7 @@
 
           <div class="public-playlist-import">
             <label class="field">
-              <span>网易云音乐 / QQ 音乐分享链接</span>
+              <span>网易云音乐 / QQ 音乐 / Apple Music 分享链接</span>
               <input
                 id="publicPlaylistInput"
                 type="text"
@@ -59,7 +59,7 @@
             <button class="button button-primary button-wide" id="addPublicPlaylistButton" type="button">
               识别并添加歌单
             </button>
-            <p class="field-hint">支持 NetEase 和 QQ Music 分享链接，仅读取公开歌单元数据与封面。</p>
+            <p class="field-hint">仅读取公开歌单元数据与封面，不读取账号内容。</p>
           </div>
         </section>
 
@@ -112,7 +112,7 @@
             </svg>
           </span>
           <h2>先粘贴一个歌单分享链接</h2>
-          <p>网易云音乐按加入时间从早到晚编号；QQ 音乐按分享歌单返回顺序编号。</p>
+          <p>网易云按加入时间编号；QQ 音乐和 Apple Music 按分享歌单返回顺序编号。</p>
         </div>
 
         <div class="workspace-content is-hidden" id="workspaceContent">
@@ -173,7 +173,7 @@
               </div>
             </div>
             <p class="analysis-note">
-              无版权歌曲不能播放或下载音频，但只要网易云仍返回封面地址，本项目就可以下载封面。
+              仅下载公开元数据中的封面，不下载音频、DRM 内容或付费资源。
             </p>
             <button class="button button-quiet is-hidden" id="toggleUnavailableButton" type="button">
               查看无版权歌曲
@@ -357,11 +357,11 @@
         <p class="legal-kicker">使用前必须阅读</p>
         <h2 id="legalTitle">个人本地合规使用声明</h2>
         <p class="legal-lead">
-          本软件与网易云音乐、QQ 音乐等平台官方无任何关联，仅用于用户本人在自己的设备上读取公开歌单元数据和下载封面。
+          本软件与网易云音乐、QQ 音乐、Apple Music 等平台官方无任何关联，仅用于用户本人在自己的设备上读取公开歌单元数据和下载封面。
         </p>
         <ul class="legal-list">
           <li>禁止公开部署、在线提供服务、销售、商业使用或批量分发。</li>
-          <li>禁止使用本软件替代网易云音乐、QQ 音乐等平台服务或批量扩散平台内容。</li>
+          <li>禁止使用本软件替代网易云音乐、QQ 音乐、Apple Music 等平台服务或批量扩散平台内容。</li>
           <li>本软件不下载音频、歌词、VIP 内容或任何付费内容。</li>
           <li>无版权歌曲的音频不能使用；仅在封面地址仍可读取时下载封面。</li>
           <li>捐赠二维码仅代表自愿无偿捐赠，与软件功能、授权或服务无关。</li>
@@ -381,6 +381,6 @@
     </div>
 
     <div class="toast is-hidden" id="toast" role="status"></div>
-    <script src="/app.js?v=20260921-9" defer></script>
+    <script src="/app.js?v=20260921-10" defer></script>
   </body>
 </html>

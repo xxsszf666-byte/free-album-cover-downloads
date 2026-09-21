@@ -197,6 +197,23 @@ function buildCoverUrl(picUrl, size) {
   return `${normalized}${separator}param=${dimension}y${dimension}`;
 }
 
+function buildAppleCoverUrl(picUrl, size) {
+  const url = String(picUrl || "").trim();
+  if (!url) {
+    return "";
+  }
+  const dimension =
+    size === "original"
+      ? "3000"
+      : /^\d{3,4}$/.test(String(size))
+        ? String(size)
+        : "3000";
+  return url.replace(
+    /\/\d+x\d+bb\.(jpg|jpeg|png|webp)$/i,
+    `/${dimension}x${dimension}bb.$1`,
+  );
+}
+
 function formatFileName(index, song) {
   const number = String(index).padStart(4, "0");
   const title = sanitizeFileName(song && song.name, "未知歌曲");
@@ -242,10 +259,16 @@ function parseQqPlaylistId(value) {
   return null;
 }
 
+function parseApplePlaylistId(value) {
+  const text = String(value == null ? "" : value).trim();
+  const match = /\/playlist\/[^/?#]+\/(pl\.[A-Za-z0-9.-]+)(?:[/?#]|$)/.exec(text);
+  return match ? match[1] : null;
+}
+
 function detectPlaylistProvider(value) {
   const text = String(value == null ? "" : value).trim();
   if (!text) {
-    throw new Error("请粘贴网易云音乐或 QQ 音乐歌单分享链接。");
+    throw new Error("请粘贴网易云音乐、QQ 音乐或 Apple Music 的公开歌单分享链接。");
   }
   if (/^\d{5,15}$/.test(text)) {
     return { provider: "netease", id: Number(text), url: "" };
@@ -266,6 +289,17 @@ function detectPlaylistProvider(value) {
       url: text,
     };
   }
+  if (hostname === "music.apple.com" || hostname.endsWith(".music.apple.com")) {
+    const id = parseApplePlaylistId(text);
+    if (!id) {
+      throw new Error("没有识别到 Apple Music 歌单 ID。");
+    }
+    return {
+      provider: "apple",
+      id,
+      url: text,
+    };
+  }
   if (hostname === "music.163.com" || hostname.endsWith(".music.163.com")) {
     return {
       provider: "netease",
@@ -274,15 +308,17 @@ function detectPlaylistProvider(value) {
     };
   }
 
-  throw new Error("目前只支持网易云音乐和 QQ 音乐的歌单分享链接。");
+  throw new Error("目前只支持网易云音乐、QQ 音乐和 Apple Music 的公开歌单分享链接。");
 }
 
 module.exports = {
   assertReadOnlyNeteaseEndpoint,
+  buildAppleCoverUrl,
   buildCoverUrl,
   detectPlaylistProvider,
   formatFileName,
   normalizeOutputPathInput,
+  parseApplePlaylistId,
   parsePlaylistId,
   parseQqPlaylistId,
   parseSelection,

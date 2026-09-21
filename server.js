@@ -8,6 +8,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const {
   assertReadOnlyNeteaseEndpoint,
+  buildAppleCoverUrl,
   buildCoverUrl,
   detectPlaylistProvider,
   formatFileName,
@@ -29,6 +30,10 @@ const BASE_HEADERS = {
 const QQ_HEADERS = {
   "User-Agent": BASE_HEADERS["User-Agent"],
   Referer: "https://y.qq.com/",
+};
+const APPLE_HEADERS = {
+  "User-Agent": BASE_HEADERS["User-Agent"],
+  Referer: "https://music.apple.com/",
 };
 
 const state = {
@@ -183,6 +188,125 @@ async function getQqPlaylistOrder(playlistId) {
   };
 }
 
+function extractApplePlaylist(html) {
+  const matches = [
+    ...String(html).matchAll(
+      /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi,
+    ),
+  ];
+  for (const match of matches) {
+    try {
+      const data = JSON.parse(match[1]);
+      if (
+        data &&
+        String(data["@type"] || "").includes("MusicPlaylist") &&
+        Array.isArray(data.track)
+      ) {
+        return data;
+      }
+    } catch {
+      // Ignore unrelated or malformed JSON-LD blocks.
+    }
+  }
+  return null;
+}
+
+async function fetchAppleTrackLookup(ids, country) {
+  const lookup = new Map();
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  const chunkSize = 50;
+  for (let index = 0; index < uniqueIds.length; index += chunkSize) {
+    const chunk = uniqueIds.slice(index, index + chunkSize);
+    const url =
+      "https://itunes.apple.com/lookup?entity=song" +
+      `&country=${encodeURIComponent(country)}&id=${chunk.join(",")}`;
+    try {
+      const response = await fetch(url, {
+        headers: APPLE_HEADERS,
+        redirect: "follow",
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!response.ok) {
+        continue;
+      }
+      const data = await response.json();
+      for (const item of data.results || []) {
+        if (item.trackId) {
+          lookup.set(String(item.trackId), item);
+        }
+      }
+    } catch {
+      // Apple Music page data remains usable if lookup enrichment fails.
+    }
+    if (index + chunkSize < uniqueIds.length) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+  return lookup;
+}
+
+async function getApplePlaylistOrder(source) {
+  if (!source.url) {
+    throw new Error("Apple Music 歌单地址缺失，请重新导入分享链接。");
+  }
+  const response = await fetch(source.url, {
+    headers: APPLE_HEADERS,
+    redirect: "follow",
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!response.ok) {
+    throw new Error(`读取 Apple Music 歌单失败（HTTP ${response.status}）。`);
+  }
+  const html = await response.text();
+  const playlist = extractApplePlaylist(html);
+  if (!playlist) {
+    throw new Error("没有读取到 Apple Music 公开歌单数据，歌单可能需要登录或未公开。");
+  }
+
+  const storefrontMatch = /^\/([a-z]{2})(?:\/|$)/i.exec(new URL(response.url).pathname);
+  const country = storefrontMatch ? storefrontMatch[1].toLowerCase() : "us";
+  const rawTracks = playlist.track.map((track, index) => {
+    const songIdMatch = /\/song\/[^/]+\/(\d+)/.exec(String(track.url || ""));
+    return {
+      index,
+      songId: songIdMatch ? songIdMatch[1] : "",
+      name: String(track.name || `歌曲 ${index + 1}`),
+      coverUrl: String(
+        (track.audio && track.audio.thumbnailUrl) || track.thumbnailUrl || "",
+      ),
+    };
+  });
+  const lookup = await fetchAppleTrackLookup(
+    rawTracks.map((track) => track.songId),
+    country,
+  );
+  const orderedTracks = rawTracks.map((track, index) => {
+    const details = lookup.get(track.songId) || null;
+    return {
+      id: track.songId || `${source.id}:${index + 1}`,
+      addedAt: null,
+      index: index + 1,
+      metadata: {
+        name: String(details?.trackName || track.name),
+        artists: details?.artistName ? [String(details.artistName)] : [],
+        album: String(details?.collectionName || ""),
+        coverUrl: String(details?.artworkUrl100 || track.coverUrl || ""),
+      },
+    };
+  });
+  return {
+    id: source.id,
+    provider: "apple",
+    name: String(playlist.name || "Apple Music 歌单"),
+    trackCount: Number(playlist.numTracks || orderedTracks.length),
+    coverUrl: buildAppleCoverUrl(
+      orderedTracks.find((track) => track.metadata.coverUrl)?.metadata.coverUrl,
+      "original",
+    ),
+    orderedTracks,
+  };
+}
+
 function reorderPlaylist(playlist, order) {
   if (order !== "desc") {
     return { ...playlist, sortOrder: "asc" };
@@ -197,9 +321,15 @@ function reorderPlaylist(playlist, order) {
 }
 
 async function getPlaylistOrder(source, forceRefresh = false, order = "asc") {
-  const provider = source.provider === "qq" ? "qq" : "netease";
-  const playlistId = Number(source.id);
-  if (!Number.isFinite(playlistId) || playlistId <= 0) {
+  const provider = ["qq", "apple"].includes(source.provider)
+    ? source.provider
+    : "netease";
+  const playlistId =
+    provider === "apple" ? String(source.id || "") : Number(source.id);
+  if (
+    (provider === "apple" && !playlistId) ||
+    (provider !== "apple" && (!Number.isFinite(playlistId) || playlistId <= 0))
+  ) {
     throw new Error("歌单 ID 无效。");
   }
 
@@ -210,7 +340,9 @@ async function getPlaylistOrder(source, forceRefresh = false, order = "asc") {
   const result =
     provider === "qq"
       ? await getQqPlaylistOrder(playlistId)
-      : await getNeteasePlaylistOrder(playlistId);
+      : provider === "apple"
+        ? await getApplePlaylistOrder(source)
+        : await getNeteasePlaylistOrder(playlistId);
   state.playlistCache.set(key, result);
   return reorderPlaylist(result, order);
 }
@@ -230,7 +362,13 @@ async function addPublicPlaylist(input) {
     specialType: 0,
     userId: 0,
     owned: false,
-    creator: playlist.provider === "qq" ? "QQ 音乐公开歌单" : "网易云公开歌单",
+    creator:
+      playlist.provider === "qq"
+        ? "QQ 音乐公开歌单"
+        : playlist.provider === "apple"
+          ? "Apple Music 公开歌单"
+          : "网易云公开歌单",
+    sourceUrl: source.url || "",
     updateTime: 0,
     public: true,
   };
@@ -358,7 +496,8 @@ function analyzeSongAvailability(song) {
   };
 }
 
-function analyzeQqPlaylist(playlist) {
+function analyzeMetadataPlaylist(playlist) {
+  const providerName = playlist.provider === "apple" ? "Apple Music" : "QQ 音乐";
   const tracks = playlist.orderedTracks.map((track) => ({
     index: track.index,
     id: track.id,
@@ -368,12 +507,12 @@ function analyzeQqPlaylist(playlist) {
     album: track.metadata.album,
     availability: track.metadata.coverUrl ? "available" : "unavailable",
     availabilityLabel: track.metadata.coverUrl ? "封面可下载" : "无封面",
-    availabilityReason: "封面下载与音频付费状态无关",
+    availabilityReason: `${providerName}公开歌单元数据，封面下载与音频权益无关`,
     canDownloadCover: Boolean(track.metadata.coverUrl),
   }));
   return {
     id: playlist.id,
-    provider: "qq",
+    provider: playlist.provider,
     name: playlist.name,
     trackCount: playlist.trackCount,
     coverUrl: playlist.coverUrl,
@@ -391,8 +530,8 @@ function analyzeQqPlaylist(playlist) {
 }
 
 async function analyzePlaylist(playlist) {
-  if (playlist.provider === "qq") {
-    return analyzeQqPlaylist(playlist);
+  if (playlist.provider === "qq" || playlist.provider === "apple") {
+    return analyzeMetadataPlaylist(playlist);
   }
   const songs = await fetchSongDetails(
     playlist.orderedTracks.map((track) => track.id),
@@ -613,6 +752,7 @@ async function runDownloadJob(job) {
   const playlist = await getPlaylistOrder({
     provider: job.playlistProvider,
     id: job.playlistId,
+    url: job.playlistUrl,
   }, false, job.sortOrder);
   const selectedIndices = parseSelection(job.selection, playlist.orderedTracks.length);
   job.total = selectedIndices.length;
@@ -646,7 +786,7 @@ async function runDownloadJob(job) {
       const song =
         playlist.provider === "netease" ? songs.get(Number(item.id)) : null;
       const metadata =
-        playlist.provider === "qq"
+        playlist.provider !== "netease"
           ? item.metadata
           : {
               name: song ? song.name : "",
@@ -681,10 +821,16 @@ async function runDownloadJob(job) {
         const result = await downloadImage(
           playlist.provider === "qq"
             ? picUrl
+            : playlist.provider === "apple"
+              ? buildAppleCoverUrl(picUrl, job.imageSize)
             : buildCoverUrl(picUrl, job.imageSize),
           targetPath,
           job.overwrite,
-          playlist.provider === "qq" ? QQ_HEADERS : BASE_HEADERS,
+          playlist.provider === "qq"
+            ? QQ_HEADERS
+            : playlist.provider === "apple"
+              ? APPLE_HEADERS
+              : BASE_HEADERS,
         );
         const savedName = path.basename(result.filePath);
         if (result.outcome === "skipped") {
@@ -722,15 +868,30 @@ async function runDownloadJob(job) {
 }
 
 async function createDownloadJob(input) {
-  const playlistId = Number(input.playlistId);
-  const playlistProvider = input.playlistProvider === "qq" ? "qq" : "netease";
-  if (!Number.isFinite(playlistId) || playlistId <= 0) {
+  const rawPlaylistId = input.playlistId;
+  const playlistProvider = ["qq", "apple"].includes(input.playlistProvider)
+    ? input.playlistProvider
+    : "netease";
+  const playlistId =
+    playlistProvider === "apple" ? String(rawPlaylistId || "") : Number(rawPlaylistId);
+  const existingPlaylist = state.playlists.find(
+    (playlist) =>
+      playlist.provider === playlistProvider &&
+      String(playlist.id) === String(input.playlistId),
+  );
+  const playlistUrl = String(input.playlistUrl || existingPlaylist?.sourceUrl || "");
+  if (
+    (playlistProvider === "apple" && !playlistId) ||
+    (playlistProvider !== "apple" &&
+      (!Number.isFinite(playlistId) || playlistId <= 0))
+  ) {
     throw new Error("请选择要下载的歌单。");
   }
 
   const playlist = await getPlaylistOrder({
     provider: playlistProvider,
     id: playlistId,
+    url: playlistUrl,
   }, false, input.sortOrder === "desc" ? "desc" : "asc");
   let downloadDir = await resolveOutputDirectory(input.outputDir, playlist.name);
   let fallbackUsed = false;
@@ -750,6 +911,7 @@ async function createDownloadJob(input) {
     id: crypto.randomUUID(),
     playlistId,
     playlistProvider,
+    playlistUrl,
     sortOrder: input.sortOrder === "desc" ? "desc" : "asc",
     selection: {
       mode: input.mode === "range" ? "range" : "indices",
@@ -879,12 +1041,26 @@ async function handleApi(request, response, pathname) {
     return true;
   }
 
-  const previewMatch = /^\/api\/playlists\/(netease|qq)\/(\d+)\/preview$/.exec(pathname);
+  const previewMatch = /^\/api\/playlists\/(netease|qq|apple)\/([^/]+)\/preview$/.exec(pathname);
   if (request.method === "GET" && previewMatch) {
     const requestUrl = new URL(request.url, "http://localhost");
     const sortOrder = requestUrl.searchParams.get("order") === "desc" ? "desc" : "asc";
+    const provider = previewMatch[1];
+    const playlistId =
+      provider === "apple"
+        ? decodeURIComponent(previewMatch[2])
+        : Number(previewMatch[2]);
+    const existingPlaylist = state.playlists.find(
+      (playlist) =>
+        playlist.provider === provider &&
+        String(playlist.id) === String(playlistId),
+    );
     const playlist = await getPlaylistOrder(
-      { provider: previewMatch[1], id: Number(previewMatch[2]) },
+      {
+        provider,
+        id: playlistId,
+        url: existingPlaylist?.sourceUrl || "",
+      },
       true,
       sortOrder,
     );
@@ -1119,9 +1295,9 @@ async function showLegalPrompt() {
   const legalText = [
     "本软件仅供用户本人在自己的设备上，进行个人学习、备份和低频研究使用。",
     "",
-    "禁止公开部署、在线提供服务、批量分发、销售、商业使用，或以本软件实质性替代网易云音乐、QQ 音乐等平台服务。",
+    "禁止公开部署、在线提供服务、批量分发、销售、商业使用，或以本软件实质性替代网易云音乐、QQ 音乐、Apple Music 等平台服务。",
     "",
-    "本软件与网易云音乐、QQ 音乐等平台官方无任何关联，不提供音频、VIP 内容或付费内容下载。",
+    "本软件与网易云音乐、QQ 音乐、Apple Music 等平台官方无任何关联，不提供音频、VIP 内容或付费内容下载。",
     "",
     "继续使用即表示你理解并自行承担相关合规风险。",
     "",

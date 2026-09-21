@@ -1,12 +1,13 @@
 # Music Cover Downloader
 
-A dependency-free local web tool that downloads album covers from public NetEase Cloud Music and QQ Music playlist share links.
+A dependency-free local web tool that downloads album covers from public NetEase Cloud Music, QQ Music, and Apple Music playlist share links.
 
 ## Features
 
 - Public playlist share links only; no account login and no cookies.
 - NetEase Cloud Music tracks are sorted by their `at` timestamp, oldest first.
 - QQ Music tracks follow the public playlist response order.
+- Apple Music public playlists use their share-page order.
 - Supports ranges such as `1-100` or selections such as `1,3,5-8`.
 - Supports 640px, 1080px, and original cover sizes.
 - NetEase read-only API allowlist and public QQ Music playlist endpoints.
@@ -17,8 +18,9 @@ Supported platforms:
 | --- | --- | --- | --- |
 | NetEase Cloud Music | Yes | Yes | No |
 | QQ Music | Yes | Yes | No |
+| Apple Music | Public playlists | Yes | No |
 
-Kugou, Kuwo, Migu, and other services are not implemented yet.
+Kugou, Kuwo, Migu, and other services are not implemented yet. Apple Music private library playlists are not supported.
 
 ## Quick Start
 

@@ -152,7 +152,13 @@ async function addPublicPlaylist() {
     renderPlaylists();
     await selectPlaylist(data.playlist);
     showToast(
-      `${data.playlist.provider === "qq" ? "QQ 音乐" : "网易云音乐"}歌单已读取。`,
+      `${
+        data.playlist.provider === "qq"
+          ? "QQ 音乐"
+          : data.playlist.provider === "apple"
+            ? "Apple Music"
+            : "网易云音乐"
+      }歌单已读取。`,
       "success",
     );
   } catch (error) {
@@ -251,9 +257,13 @@ async function selectPlaylist(playlist) {
       ? state.sortOrder === "desc"
         ? "序号按 QQ 音乐歌单返回顺序倒序排列"
         : "序号按 QQ 音乐歌单返回顺序排列"
-      : state.sortOrder === "desc"
-        ? "序号按加入时间从晚到早排列"
-        : "序号按加入时间从早到晚排列";
+      : playlist.provider === "apple"
+        ? state.sortOrder === "desc"
+          ? "序号按 Apple Music 歌单顺序倒序排列"
+          : "序号按 Apple Music 歌单顺序排列"
+        : state.sortOrder === "desc"
+          ? "序号按加入时间从晚到早排列"
+          : "序号按加入时间从早到晚排列";
   elements.selectedCover.classList.toggle("has-image", Boolean(playlist.coverUrl));
   elements.selectedCover.style.backgroundImage = playlist.coverUrl
     ? `url("${playlist.coverUrl.replace(/"/g, "%22")}")`
@@ -282,6 +292,8 @@ async function selectPlaylist(playlist) {
     elements.analysisDescription.textContent =
       provider === "qq"
         ? "QQ 音乐封面地址来自公开分享歌单接口，封面下载与音频付费状态无关。"
+        : provider === "apple"
+          ? "Apple Music 数据来自公开分享页面；封面可下载，不包含版权状态字段。"
         : "版权状态根据网易云返回的歌曲状态和 noCopyrightRcmd 字段判断。";
     state.selectedPlaylist.trackCount = data.trackCount;
     elements.selectedTrackCount.textContent = data.trackCount;
@@ -314,11 +326,26 @@ async function selectPlaylist(playlist) {
 function updateImageSizeOptions(provider) {
   const options = elements.imageSize.querySelectorAll("option");
   if (provider === "qq") {
+    options[0].value = "1080";
     options[0].textContent = "800 × 800（QQ 音乐最高可用）";
+    options[1].value = "640";
     options[1].textContent = "500 × 500";
+    options[2].value = "original";
+    options[2].textContent = "原始尺寸";
+  } else if (provider === "apple") {
+    options[0].value = "original";
+    options[0].textContent = "3000 × 3000（推荐）";
+    options[1].value = "1080";
+    options[1].textContent = "1080 × 1080";
+    options[2].value = "640";
+    options[2].textContent = "640 × 640";
   } else {
+    options[0].value = "1080";
     options[0].textContent = "1080 × 1080（推荐）";
+    options[1].value = "640";
     options[1].textContent = "640 × 640";
+    options[2].value = "original";
+    options[2].textContent = "原始尺寸";
   }
 }
 
@@ -361,7 +388,8 @@ function renderTrackPreview(tracks) {
     timeCell.className = "muted-cell";
     timeCell.textContent = track.addedAt
       ? formatDate(track.addedAt)
-      : state.selectedPlaylist && state.selectedPlaylist.provider === "qq"
+      : state.selectedPlaylist &&
+          ["qq", "apple"].includes(state.selectedPlaylist.provider)
         ? "歌单顺序"
         : "未知";
 
@@ -565,6 +593,7 @@ async function startDownload() {
       body: JSON.stringify({
         playlistId: state.selectedPlaylist.id,
         playlistProvider: state.selectedPlaylist.provider || "netease",
+        playlistUrl: state.selectedPlaylist.sourceUrl || "",
         sortOrder: state.sortOrder,
         mode: state.mode,
         start: elements.startIndex.value,

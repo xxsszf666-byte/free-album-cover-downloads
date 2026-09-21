@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   assertReadOnlyNeteaseEndpoint,
+  buildAppleCoverUrl,
   buildCoverUrl,
   detectPlaylistProvider,
   formatFileName,
@@ -103,6 +104,16 @@ test("builds cover URL with requested size", () => {
   );
 });
 
+test("builds high-resolution Apple Music artwork URL", () => {
+  assert.equal(
+    buildAppleCoverUrl(
+      "https://is1-ssl.mzstatic.com/image/thumb/Music/example.jpg/1200x630bb.jpg",
+      "1080",
+    ),
+    "https://is1-ssl.mzstatic.com/image/thumb/Music/example.jpg/1080x1080bb.jpg",
+  );
+});
+
 test("formats cover file name with playlist index", () => {
   assert.equal(
     formatFileName(7, {
@@ -139,4 +150,14 @@ test("detects NetEase and QQ Music playlist share links", () => {
     id: 3778678,
     url: "",
   });
+  assert.deepEqual(
+    detectPlaylistProvider(
+      "https://music.apple.com/cn/playlist/kpopwrld/pl.48229b41bbfc47d7af39dae8e8b5276e",
+    ),
+    {
+      provider: "apple",
+      id: "pl.48229b41bbfc47d7af39dae8e8b5276e",
+      url: "https://music.apple.com/cn/playlist/kpopwrld/pl.48229b41bbfc47d7af39dae8e8b5276e",
+    },
+  );
 });
