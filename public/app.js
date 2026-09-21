@@ -1,35 +1,46 @@
 "use strict";
 
 const state = {
-  loggedIn: false,
-  profile: null,
   playlists: [],
   selectedPlaylist: null,
   playlistInfo: null,
   mode: "range",
-  loginPolling: false,
+  sortOrder: "asc",
   jobPolling: false,
   currentJob: null,
+  unavailableTracks: [],
+  appInitialized: false,
+  analysisRequestId: 0,
+  donationShownJobs: new Set(),
+  legalMode: "startup",
 };
 
 const elements = {
-  accountDot: document.getElementById("accountDot"),
-  accountText: document.getElementById("accountText"),
   addPublicPlaylistButton: document.getElementById("addPublicPlaylistButton"),
+  analysisAvailable: document.getElementById("analysisAvailable"),
+  analysisDescription: document.getElementById("analysisDescription"),
+  analysisMissingCover: document.getElementById("analysisMissingCover"),
+  analysisRestricted: document.getElementById("analysisRestricted"),
+  analysisTotal: document.getElementById("analysisTotal"),
+  analysisUnavailable: document.getElementById("analysisUnavailable"),
   cancelButton: document.getElementById("cancelButton"),
   downloadButton: document.getElementById("downloadButton"),
+  donationCloseButton: document.getElementById("donationCloseButton"),
+  donationDoneButton: document.getElementById("donationDoneButton"),
+  donationModal: document.getElementById("donationModal"),
+  donationSkipButton: document.getElementById("donationSkipButton"),
   endIndex: document.getElementById("endIndex"),
   imageSize: document.getElementById("imageSize"),
   indicesFields: document.getElementById("indicesFields"),
   indicesInput: document.getElementById("indicesInput"),
+  legalAgreeCheckbox: document.getElementById("legalAgreeCheckbox"),
+  legalConsentRow: document.querySelector(".legal-consent"),
+  legalContinueButton: document.getElementById("legalContinueButton"),
+  legalExitButton: document.getElementById("legalExitButton"),
+  legalModal: document.getElementById("legalModal"),
   logPanel: document.getElementById("logPanel"),
-  loginBadge: document.getElementById("loginBadge"),
-  loginButton: document.getElementById("loginButton"),
-  loginButtonText: document.getElementById("loginButtonText"),
-  loginHelp: document.getElementById("loginHelp"),
-  loginLink: document.getElementById("loginLink"),
-  logoutButton: document.getElementById("logoutButton"),
   openFolderButton: document.getElementById("openFolderButton"),
+  orderDescription: document.getElementById("orderDescription"),
   outputDir: document.getElementById("outputDir"),
   overwrite: document.getElementById("overwrite"),
   playlistList: document.getElementById("playlistList"),
@@ -48,7 +59,9 @@ const elements = {
   selectionSummary: document.getElementById("selectionSummary"),
   startIndex: document.getElementById("startIndex"),
   toast: document.getElementById("toast"),
+  toggleUnavailableButton: document.getElementById("toggleUnavailableButton"),
   trackPreviewBody: document.getElementById("trackPreviewBody"),
+  unavailableList: document.getElementById("unavailableList"),
   workspaceContent: document.getElementById("workspaceContent"),
   workspaceEmpty: document.getElementById("workspaceEmpty"),
 };
@@ -78,130 +91,31 @@ function showToast(message, type = "") {
   }, 4200);
 }
 
-function setAccount(profile) {
-  state.profile = profile;
-  state.loggedIn = Boolean(profile);
-  elements.accountDot.classList.toggle("is-online", Boolean(profile));
-  elements.accountText.textContent = profile ? profile.nickname : "尚未登录";
-  elements.logoutButton.classList.toggle("is-hidden", !profile);
-  elements.refreshPlaylistsButton.disabled = !profile;
-  elements.playlistSearch.disabled = !profile && state.playlists.length === 0;
-  elements.loginButton.disabled = Boolean(profile);
-  elements.loginButtonText.textContent = profile ? "已登录" : "获取登录二维码";
-
-  if (profile) {
-    elements.loginBadge.textContent = "已登录";
-    elements.loginBadge.className = "state-badge is-success";
-    elements.loginHelp.textContent =
-      "已读取登录状态。程序只读取歌单和封面，不会修改歌单、收藏或账号设置。";
-    elements.loginLink.classList.add("is-hidden");
-  } else {
-    elements.loginBadge.textContent = "未登录";
-    elements.loginBadge.className = "state-badge";
-    elements.loginHelp.textContent =
-      "点击后请在官方页面中选择“网易云音乐 App 扫码”，再用手机网易云音乐扫描。微信扫码或网页账号密码登录不会同步。";
-  }
-}
-
-function setLoginProgress(text, badgeType = "warning") {
-  elements.loginBadge.textContent = text;
-  elements.loginBadge.className = `state-badge is-${badgeType}`;
-}
-
 function getErrorMessage(error) {
   return error && error.message ? error.message : "发生未知错误。";
+}
+
+function normalizeOutputPathText(value) {
+  let text = String(value || "").trim();
+  if (
+    text.length >= 2 &&
+    ((text.startsWith('"') && text.endsWith('"')) ||
+      (text.startsWith("'") && text.endsWith("'")))
+  ) {
+    text = text.slice(1, -1).trim();
+  }
+  return text;
 }
 
 async function loadSession() {
   try {
     const data = await api("/api/session");
-    setAccount(data.profile);
-    if (data.loggedIn || data.playlistCount > 0) {
+    if (data.playlistCount > 0) {
       await loadPlaylists();
     }
   } catch (error) {
     showToast(getErrorMessage(error), "error");
   }
-}
-
-async function startLogin() {
-  const popup = window.open("about:blank", "netease-login");
-  elements.loginButton.disabled = true;
-  elements.loginButtonText.textContent = "正在获取二维码...";
-  elements.loginLink.classList.add("is-hidden");
-
-  try {
-    const data = await api("/api/login/start", {
-      method: "POST",
-      body: "{}",
-    });
-    elements.loginLink.href = data.url;
-    elements.loginLink.classList.remove("is-hidden");
-    if (popup) {
-      popup.location.href = data.url;
-    } else {
-      window.open(data.url, "_blank");
-    }
-    setLoginProgress("等待扫码");
-    elements.loginHelp.textContent =
-      "请在浏览器页面中选择“网易云音乐 App 扫码”，再用手机网易云音乐扫描。不要使用微信扫码或网页账号密码登录，它们不会同步到本程序。";
-    elements.loginButton.disabled = false;
-    elements.loginButtonText.textContent = "重新获取二维码";
-    startLoginPolling();
-  } catch (error) {
-    if (popup) {
-      popup.close();
-    }
-    elements.loginButton.disabled = false;
-    elements.loginButtonText.textContent = "重新获取二维码";
-    setAccount(null);
-    showToast(getErrorMessage(error), "error");
-  }
-}
-
-async function startLoginPolling() {
-  if (state.loginPolling) {
-    return;
-  }
-  state.loginPolling = true;
-
-  const poll = async () => {
-    if (!state.loginPolling) {
-      return;
-    }
-    try {
-      const data = await api("/api/login/poll");
-      if (data.state === "success") {
-        state.loginPolling = false;
-        setAccount(data.profile);
-        showToast("登录成功，正在读取歌单。", "success");
-        await loadPlaylists();
-        return;
-      }
-      if (data.state === "confirming") {
-        setLoginProgress("等待确认");
-        elements.loginHelp.textContent = "已扫码，请在手机上点击确认登录。";
-      } else if (data.state === "expired") {
-        state.loginPolling = false;
-        setLoginProgress("已过期", "warning");
-        elements.loginButton.disabled = false;
-        elements.loginButtonText.textContent = "重新获取二维码";
-        elements.loginHelp.textContent = data.message || "二维码已过期，请重新获取。";
-        return;
-      } else {
-        setLoginProgress("等待扫码");
-      }
-    } catch (error) {
-      state.loginPolling = false;
-      elements.loginButton.disabled = false;
-      elements.loginButtonText.textContent = "重新获取二维码";
-      showToast(getErrorMessage(error), "error");
-      return;
-    }
-    window.setTimeout(poll, 1600);
-  };
-
-  poll();
 }
 
 async function loadPlaylists() {
@@ -213,7 +127,7 @@ async function loadPlaylists() {
   } catch (error) {
     showToast(getErrorMessage(error), "error");
   } finally {
-    elements.refreshPlaylistsButton.disabled = !state.loggedIn;
+    elements.refreshPlaylistsButton.disabled = state.playlists.length === 0;
   }
 }
 
@@ -227,13 +141,20 @@ async function addPublicPlaylist() {
     });
     state.playlists = [
       data.playlist,
-      ...state.playlists.filter((playlist) => playlist.id !== data.playlist.id),
+      ...state.playlists.filter(
+        (playlist) =>
+          playlist.id !== data.playlist.id ||
+          playlist.provider !== data.playlist.provider,
+      ),
     ];
     elements.publicPlaylistInput.value = "";
     elements.playlistSearch.disabled = false;
     renderPlaylists();
     await selectPlaylist(data.playlist);
-    showToast("公开歌单已读取。", "success");
+    showToast(
+      `${data.playlist.provider === "qq" ? "QQ 音乐" : "网易云音乐"}歌单已读取。`,
+      "success",
+    );
   } catch (error) {
     showToast(getErrorMessage(error), "error");
   } finally {
@@ -317,29 +238,51 @@ async function selectPlaylist(playlist) {
 
   state.selectedPlaylist = playlist;
   state.playlistInfo = null;
+  const requestId = state.analysisRequestId + 1;
+  state.analysisRequestId = requestId;
+  updateImageSizeOptions(playlist.provider);
   renderPlaylists();
   elements.workspaceEmpty.classList.add("is-hidden");
   elements.workspaceContent.classList.remove("is-hidden");
   elements.selectedPlaylistName.textContent = playlist.name;
   elements.selectedTrackCount.textContent = playlist.trackCount;
+  elements.orderDescription.textContent =
+    playlist.provider === "qq"
+      ? state.sortOrder === "desc"
+        ? "序号按 QQ 音乐歌单返回顺序倒序排列"
+        : "序号按 QQ 音乐歌单返回顺序排列"
+      : state.sortOrder === "desc"
+        ? "序号按加入时间从晚到早排列"
+        : "序号按加入时间从早到晚排列";
   elements.selectedCover.classList.toggle("has-image", Boolean(playlist.coverUrl));
   elements.selectedCover.style.backgroundImage = playlist.coverUrl
     ? `url("${playlist.coverUrl.replace(/"/g, "%22")}")`
     : "";
+  resetAnalysis();
   elements.downloadButton.disabled = true;
   elements.trackPreviewBody.replaceChildren();
   const loadingRow = document.createElement("tr");
   const cell = document.createElement("td");
-  cell.colSpan = 4;
+  cell.colSpan = 5;
   cell.className = "table-loading";
-  cell.textContent = "正在计算最新加入顺序...";
+  cell.textContent = "正在识别歌曲总数和版权状态...";
   loadingRow.append(cell);
   elements.trackPreviewBody.append(loadingRow);
   resetJob();
 
   try {
-    const data = await api(`/api/playlists/${encodeURIComponent(playlist.id)}/preview?count=30`);
+    const provider = playlist.provider || "netease";
+    const data = await api(
+      `/api/playlists/${encodeURIComponent(provider)}/${encodeURIComponent(playlist.id)}/preview?count=50&order=${encodeURIComponent(state.sortOrder)}`,
+    );
+    if (requestId !== state.analysisRequestId) {
+      return;
+    }
     state.playlistInfo = data;
+    elements.analysisDescription.textContent =
+      provider === "qq"
+        ? "QQ 音乐封面地址来自公开分享歌单接口，封面下载与音频付费状态无关。"
+        : "版权状态根据网易云返回的歌曲状态和 noCopyrightRcmd 字段判断。";
     state.selectedPlaylist.trackCount = data.trackCount;
     elements.selectedTrackCount.textContent = data.trackCount;
     elements.startIndex.max = String(data.trackCount);
@@ -348,17 +291,34 @@ async function selectPlaylist(playlist) {
     elements.endIndex.value = String(Math.min(10, data.trackCount));
     elements.indicesInput.value = "";
     elements.downloadButton.disabled = data.trackCount < 1;
+    renderAnalysis(data);
     renderTrackPreview(data.preview);
     updateSelectionSummary();
   } catch (error) {
+    if (requestId !== state.analysisRequestId) {
+      return;
+    }
     const errorRow = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 4;
+    cell.colSpan = 5;
     cell.className = "table-empty";
     cell.textContent = getErrorMessage(error);
     errorRow.append(cell);
     elements.trackPreviewBody.replaceChildren(errorRow);
+    elements.analysisTotal.textContent = "—";
+    elements.analysisDescription.textContent = `识别失败：${getErrorMessage(error)}`;
     showToast(getErrorMessage(error), "error");
+  }
+}
+
+function updateImageSizeOptions(provider) {
+  const options = elements.imageSize.querySelectorAll("option");
+  if (provider === "qq") {
+    options[0].textContent = "800 × 800（QQ 音乐最高可用）";
+    options[1].textContent = "500 × 500";
+  } else {
+    options[0].textContent = "1080 × 1080（推荐）";
+    options[1].textContent = "640 × 640";
   }
 }
 
@@ -367,7 +327,7 @@ function renderTrackPreview(tracks) {
   if (!tracks || tracks.length === 0) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 4;
+    cell.colSpan = 5;
     cell.className = "table-empty";
     cell.textContent = "歌单里没有歌曲";
     row.append(cell);
@@ -390,12 +350,78 @@ function renderTrackPreview(tracks) {
     albumCell.className = "muted-cell";
     albumCell.textContent = track.album || "-";
 
+    const statusCell = document.createElement("td");
+    const status = document.createElement("span");
+    status.className = `status-pill status-${track.availability || "available"}`;
+    status.textContent = track.availabilityLabel || "正常";
+    status.title = track.availabilityReason || "";
+    statusCell.append(status);
+
     const timeCell = document.createElement("td");
     timeCell.className = "muted-cell";
-    timeCell.textContent = formatDate(track.addedAt);
+    timeCell.textContent = track.addedAt
+      ? formatDate(track.addedAt)
+      : state.selectedPlaylist && state.selectedPlaylist.provider === "qq"
+        ? "歌单顺序"
+        : "未知";
 
-    row.append(indexCell, songCell, albumCell, timeCell);
+    row.append(indexCell, songCell, albumCell, statusCell, timeCell);
     elements.trackPreviewBody.append(row);
+  }
+}
+
+function resetAnalysis() {
+  state.unavailableTracks = [];
+  elements.analysisTotal.textContent = "0";
+  elements.analysisAvailable.textContent = "0";
+  elements.analysisRestricted.textContent = "0";
+  elements.analysisUnavailable.textContent = "0";
+  elements.analysisMissingCover.textContent = "0";
+  elements.toggleUnavailableButton.classList.add("is-hidden");
+  elements.unavailableList.classList.add("is-hidden");
+  elements.unavailableList.replaceChildren();
+}
+
+function renderAnalysis(data) {
+  const summary = data.summary || {};
+  state.unavailableTracks = Array.isArray(data.unavailableTracks)
+    ? data.unavailableTracks
+    : [];
+  elements.analysisTotal.textContent = String(summary.total || data.trackCount || 0);
+  elements.analysisAvailable.textContent = String(summary.available || 0);
+  elements.analysisRestricted.textContent = String(summary.restricted || 0);
+  elements.analysisUnavailable.textContent = String(summary.unavailable || 0);
+  elements.analysisMissingCover.textContent = String(summary.missingCover || 0);
+
+  if (state.unavailableTracks.length === 0) {
+    elements.toggleUnavailableButton.classList.add("is-hidden");
+    elements.unavailableList.classList.add("is-hidden");
+    elements.unavailableList.replaceChildren();
+    return;
+  }
+
+  elements.toggleUnavailableButton.textContent = `查看无版权歌曲（${state.unavailableTracks.length}）`;
+  elements.toggleUnavailableButton.classList.remove("is-hidden");
+  elements.unavailableList.replaceChildren();
+  for (const track of state.unavailableTracks) {
+    const item = document.createElement("div");
+    item.className = "unavailable-item";
+
+    const index = document.createElement("span");
+    index.className = "unavailable-index";
+    index.textContent = `#${track.index}`;
+
+    const name = document.createElement("span");
+    name.className = "unavailable-name";
+    name.textContent = `${track.name}${track.artists.length ? ` - ${track.artists.join("、")}` : ""}`;
+    name.title = name.textContent;
+
+    const reason = document.createElement("span");
+    reason.className = "unavailable-reason";
+    reason.textContent = track.canDownloadCover ? "封面可下载" : "无封面";
+
+    item.append(index, name, reason);
+    elements.unavailableList.append(item);
   }
 }
 
@@ -491,6 +517,18 @@ function setMode(mode) {
   updateSelectionSummary();
 }
 
+async function setSortOrder(order) {
+  state.sortOrder = order === "desc" ? "desc" : "asc";
+  for (const button of document.querySelectorAll(".sort-option")) {
+    const active = button.dataset.order === state.sortOrder;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  if (state.selectedPlaylist) {
+    await selectPlaylist(state.selectedPlaylist);
+  }
+}
+
 function resetJob() {
   state.currentJob = null;
   state.jobPolling = false;
@@ -526,12 +564,14 @@ async function startDownload() {
       method: "POST",
       body: JSON.stringify({
         playlistId: state.selectedPlaylist.id,
+        playlistProvider: state.selectedPlaylist.provider || "netease",
+        sortOrder: state.sortOrder,
         mode: state.mode,
         start: elements.startIndex.value,
         end: elements.endIndex.value,
         selection: elements.indicesInput.value,
         imageSize: elements.imageSize.value,
-        outputDir: elements.outputDir.value,
+        outputDir: normalizeOutputPathText(elements.outputDir.value),
         overwrite: elements.overwrite.checked,
       }),
     });
@@ -569,6 +609,10 @@ function startJobPolling() {
         }
         if (job.status === "completed") {
           showToast(`下载完成：成功 ${job.success}，失败 ${job.failed}。`, "success");
+          if (!state.donationShownJobs.has(job.id)) {
+            state.donationShownJobs.add(job.id);
+            window.setTimeout(showDonationModal, 900);
+          }
         }
         return;
       }
@@ -664,35 +708,6 @@ async function openFolder() {
   }
 }
 
-async function logout() {
-  state.loginPolling = false;
-  state.jobPolling = false;
-  const publicPlaylists = state.playlists.filter((playlist) => playlist.public);
-  state.playlists = publicPlaylists;
-  if (!state.selectedPlaylist || !state.selectedPlaylist.public) {
-    state.selectedPlaylist = null;
-  }
-  state.playlistInfo = null;
-  state.currentJob = null;
-  if (state.selectedPlaylist) {
-    elements.workspaceContent.classList.remove("is-hidden");
-    elements.workspaceEmpty.classList.add("is-hidden");
-  } else {
-    elements.workspaceContent.classList.add("is-hidden");
-    elements.workspaceEmpty.classList.remove("is-hidden");
-  }
-  elements.playlistSearch.value = "";
-  renderPlaylists();
-  resetJob();
-  setAccount(null);
-  try {
-    await api("/api/logout", { method: "POST", body: "{}" });
-  } catch (error) {
-    showToast(getErrorMessage(error), "error");
-  }
-}
-
-elements.loginButton.addEventListener("click", startLogin);
 elements.addPublicPlaylistButton.addEventListener("click", addPublicPlaylist);
 elements.publicPlaylistInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -703,16 +718,28 @@ elements.refreshPlaylistsButton.addEventListener("click", loadPlaylists);
 elements.playlistSearch.addEventListener("input", renderPlaylists);
 elements.cancelButton.addEventListener("click", cancelJob);
 elements.openFolderButton.addEventListener("click", openFolder);
-elements.logoutButton.addEventListener("click", logout);
+elements.toggleUnavailableButton.addEventListener("click", () => {
+  elements.unavailableList.classList.toggle("is-hidden");
+});
 elements.downloadButton.addEventListener("click", startDownload);
+elements.outputDir.addEventListener("blur", () => {
+  elements.outputDir.value = normalizeOutputPathText(elements.outputDir.value);
+});
 elements.startIndex.addEventListener("input", updateSelectionSummary);
 elements.endIndex.addEventListener("input", updateSelectionSummary);
 elements.indicesInput.addEventListener("input", updateSelectionSummary);
 for (const button of document.querySelectorAll(".segment")) {
   button.addEventListener("click", () => setMode(button.dataset.mode));
 }
+for (const button of document.querySelectorAll(".sort-option")) {
+  button.addEventListener("click", () => setSortOrder(button.dataset.order));
+}
 
 async function initialize() {
+  if (state.appInitialized) {
+    return;
+  }
+  state.appInitialized = true;
   setMode("range");
   resetJob();
   await loadSession();
@@ -724,4 +751,78 @@ async function initialize() {
   }
 }
 
-initialize();
+function setAppInert(value) {
+  document.querySelector(".topbar").inert = value;
+  document.querySelector(".app-shell").inert = value;
+}
+
+function showDonationModal() {
+  setAppInert(true);
+  document.body.classList.add("legal-locked");
+  elements.donationModal.classList.remove("is-hidden");
+}
+
+function closeDonationModal() {
+  elements.donationModal.classList.add("is-hidden");
+  document.body.classList.remove("legal-locked");
+  setAppInert(false);
+  showToast("感谢使用", "success");
+  window.setTimeout(showSafetyNotice, 900);
+}
+
+function showSafetyNotice() {
+  state.legalMode = "safety";
+  elements.legalAgreeCheckbox.checked = true;
+  elements.legalContinueButton.disabled = false;
+  elements.legalContinueButton.textContent = "我已知晓";
+  elements.legalConsentRow.classList.add("is-hidden");
+  elements.legalExitButton.classList.add("is-hidden");
+  elements.legalModal.classList.remove("is-hidden");
+  document.body.classList.add("legal-locked");
+  setAppInert(true);
+}
+
+function restoreStartupLegalControls() {
+  elements.legalConsentRow.classList.remove("is-hidden");
+  elements.legalExitButton.classList.remove("is-hidden");
+  elements.legalContinueButton.textContent = "我已知晓，仅限个人本地使用";
+}
+
+function initializeLegalNotice() {
+  state.legalMode = "startup";
+  document.body.classList.add("legal-locked");
+  setAppInert(true);
+  elements.legalContinueButton.disabled = !elements.legalAgreeCheckbox.checked;
+
+  elements.legalAgreeCheckbox.addEventListener("change", () => {
+    elements.legalContinueButton.disabled = !elements.legalAgreeCheckbox.checked;
+  });
+  elements.legalContinueButton.addEventListener("click", () => {
+    if (state.legalMode === "startup" && !elements.legalAgreeCheckbox.checked) {
+      return;
+    }
+    elements.legalModal.classList.add("is-hidden");
+    document.body.classList.remove("legal-locked");
+    setAppInert(false);
+    if (state.legalMode === "startup") {
+      restoreStartupLegalControls();
+      initialize();
+    } else {
+      restoreStartupLegalControls();
+      state.legalMode = "startup";
+    }
+  });
+  elements.legalExitButton.addEventListener("click", () => {
+    window.close();
+    elements.legalExitButton.textContent = "请关闭此页面";
+    elements.legalContinueButton.disabled = true;
+    elements.legalAgreeCheckbox.disabled = true;
+  });
+  elements.legalAgreeCheckbox.focus();
+}
+
+elements.donationCloseButton.addEventListener("click", closeDonationModal);
+elements.donationSkipButton.addEventListener("click", closeDonationModal);
+elements.donationDoneButton.addEventListener("click", closeDonationModal);
+
+initializeLegalNotice();

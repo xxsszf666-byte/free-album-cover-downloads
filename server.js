@@ -9,8 +9,10 @@ const { spawn } = require("node:child_process");
 const {
   assertReadOnlyNeteaseEndpoint,
   buildCoverUrl,
+  detectPlaylistProvider,
   formatFileName,
-  parsePlaylistId,
+  normalizeOutputPathInput,
+  parseQqPlaylistId,
   parseSelection,
   sanitizeFileName,
   sortTrackIdsByAdded,
@@ -24,15 +26,16 @@ const BASE_HEADERS = {
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
   Referer: "https://music.163.com/",
 };
+const QQ_HEADERS = {
+  "User-Agent": BASE_HEADERS["User-Agent"],
+  Referer: "https://y.qq.com/",
+};
 
 const state = {
-  cookies: [],
-  loginKey: "",
-  loginStatus: "idle",
-  profile: null,
   playlists: [],
   publicPlaylists: new Map(),
   playlistCache: new Map(),
+  songDetailCache: new Map(),
   jobs: new Map(),
 };
 
@@ -55,55 +58,12 @@ function textResponse(response, statusCode, body, contentType = "text/plain") {
   response.end(body);
 }
 
-function requireLogin() {
-  if (!state.profile || state.cookies.length === 0) {
-    const error = new Error("请先扫码登录网易云音乐。");
-    error.statusCode = 401;
-    throw error;
-  }
-}
-
-function cookieHeader() {
-  return state.cookies.join("; ");
-}
-
-function mergeSetCookies(setCookies) {
-  const jar = new Map();
-  for (const item of state.cookies) {
-    const [pair] = item.split(";");
-    const separator = pair.indexOf("=");
-    if (separator > 0) {
-      jar.set(pair.slice(0, separator), pair);
-    }
-  }
-
-  for (const rawCookie of setCookies || []) {
-    const [pair] = String(rawCookie).split(";");
-    const separator = pair.indexOf("=");
-    if (separator > 0) {
-      jar.set(pair.slice(0, separator), pair);
-    }
-  }
-  state.cookies = [...jar.values()];
-}
-
-function getSetCookies(response) {
-  if (typeof response.headers.getSetCookie === "function") {
-    return response.headers.getSetCookie();
-  }
-  const header = response.headers.get("set-cookie");
-  return header ? [header] : [];
-}
-
 async function neteaseRequest(
   pathname,
-  { useCookies = true, timeout = 30000 } = {},
+  { timeout = 30000 } = {},
 ) {
   assertReadOnlyNeteaseEndpoint(pathname);
   const headers = { ...BASE_HEADERS };
-  if (useCookies && state.cookies.length > 0) {
-    headers.Cookie = cookieHeader();
-  }
 
   const response = await fetch(`${API_BASE}${pathname}`, {
     method: "GET",
@@ -121,152 +81,7 @@ async function neteaseRequest(
   return { response, text, data };
 }
 
-async function fetchProfile() {
-  const { data } = await neteaseRequest("/api/nuser/account/get");
-  if (!data || data.code !== 200 || !data.profile) {
-    return null;
-  }
-  return {
-    userId: data.profile.userId,
-    nickname: data.profile.nickname,
-    avatarUrl: data.profile.avatarUrl,
-  };
-}
-
-async function startLogin() {
-  state.cookies = [];
-  state.profile = null;
-  state.playlists = [...state.publicPlaylists.values()];
-  state.playlistCache.clear();
-  state.loginStatus = "starting";
-
-  const { data } = await neteaseRequest(
-    "/api/login/qrcode/unikey?type=1",
-    { useCookies: false },
-  );
-  if (!data || data.code !== 200 || !data.unikey) {
-    throw new Error("无法创建扫码登录会话，请稍后重试。");
-  }
-
-  state.loginKey = data.unikey;
-  state.loginStatus = "waiting";
-  return {
-    key: data.unikey,
-    url: `https://music.163.com/login?codekey=${encodeURIComponent(data.unikey)}`,
-  };
-}
-
-async function pollLogin() {
-  if (!state.loginKey) {
-    return { code: 800, state: "expired", message: "登录会话已失效，请重新获取二维码。" };
-  }
-
-  const { response, data } = await neteaseRequest(
-    `/api/login/qrcode/client/login?key=${encodeURIComponent(state.loginKey)}&type=1`,
-    { useCookies: false },
-  );
-  const code = data && Number(data.code);
-
-  if (code === 803) {
-    mergeSetCookies(getSetCookies(response));
-    const profile = await fetchProfile();
-    if (!profile) {
-      state.loginStatus = "error";
-      throw new Error("扫码成功，但没有读取到账号信息，请重新登录。");
-    }
-    state.profile = profile;
-    state.loginStatus = "success";
-    state.loginKey = "";
-    return { code, state: "success", profile };
-  }
-
-  if (code === 802) {
-    state.loginStatus = "confirming";
-    return { code, state: "confirming", message: "已扫码，请在手机上确认登录。" };
-  }
-
-  if (code === 800) {
-    state.loginStatus = "expired";
-    state.loginKey = "";
-    return { code, state: "expired", message: "二维码已过期，请重新获取。" };
-  }
-
-  state.loginStatus = "waiting";
-  return { code: code || 801, state: "waiting", message: "等待扫码。" };
-}
-
-async function fetchPlaylists() {
-  requireLogin();
-  const userId = state.profile.userId;
-  const collected = [];
-  let offset = 0;
-  const limit = 1000;
-
-  while (offset < 10000) {
-    const { data } = await neteaseRequest(
-      `/api/user/playlist/?uid=${encodeURIComponent(userId)}&offset=${offset}&limit=${limit}`,
-    );
-    if (!data || data.code !== 200 || !Array.isArray(data.playlist)) {
-      throw new Error("拉取歌单失败，登录状态可能已失效。");
-    }
-    collected.push(...data.playlist);
-    if (!data.more || data.playlist.length === 0) {
-      break;
-    }
-    offset += data.playlist.length;
-  }
-
-  const rank = (playlist) => {
-    if (playlist.specialType === 5) {
-      return 0;
-    }
-    if (Number(playlist.userId) === Number(userId)) {
-      return 1;
-    }
-    return 2;
-  };
-
-  const accountPlaylists = collected
-    .map((playlist) => ({
-      id: Number(playlist.id),
-      name: String(playlist.name || "未命名歌单"),
-      trackCount: Number(playlist.trackCount || 0),
-      coverUrl: String(playlist.coverImgUrl || ""),
-      specialType: Number(playlist.specialType || 0),
-      userId: Number(playlist.userId || 0),
-      owned: Number(playlist.userId) === Number(userId),
-      creator: String((playlist.creator && playlist.creator.nickname) || ""),
-      updateTime: Number(playlist.updateTime || playlist.trackUpdateTime || 0),
-    }))
-    .sort((left, right) => {
-      const rankDiff = rank(left) - rank(right);
-      if (rankDiff !== 0) {
-        return rankDiff;
-      }
-      if (right.updateTime !== left.updateTime) {
-        return right.updateTime - left.updateTime;
-      }
-      return left.name.localeCompare(right.name, "zh-CN");
-    });
-  state.playlists = [
-    ...state.publicPlaylists.values(),
-    ...accountPlaylists.filter(
-      (playlist) =>
-        ![...state.publicPlaylists.keys()].some(
-          (publicId) => Number(publicId) === playlist.id,
-        ),
-    ),
-  ];
-
-  return state.playlists;
-}
-
-async function getPlaylistOrder(playlistId, forceRefresh = false) {
-  const key = String(playlistId);
-  if (!forceRefresh && state.playlistCache.has(key)) {
-    return state.playlistCache.get(key);
-  }
-
+async function getNeteasePlaylistOrder(playlistId) {
   const { data } = await neteaseRequest(
     `/api/v6/playlist/detail?id=${encodeURIComponent(playlistId)}&n=1&s=0`,
   );
@@ -281,34 +96,151 @@ async function getPlaylistOrder(playlistId, forceRefresh = false) {
   const order = sortTrackIdsByAdded(rawTrackIds);
   const result = {
     id: Number(data.playlist.id),
+    provider: "netease",
     name: String(data.playlist.name || "未命名歌单"),
     trackCount: order.length,
     coverUrl: String(data.playlist.coverImgUrl || ""),
     orderedTracks: order,
   };
-  state.playlistCache.set(key, result);
   return result;
 }
 
+async function resolveQqPlaylistId(url) {
+  const response = await fetch(url, {
+    headers: QQ_HEADERS,
+    redirect: "follow",
+    signal: AbortSignal.timeout(30000),
+  });
+  const candidates = [response.url, url];
+  for (const candidate of candidates) {
+    const id = parseQqPlaylistId(candidate);
+    if (id) {
+      return id;
+    }
+  }
+
+  const text = await response.text();
+  const patterns = [
+    /["'](?:disstid|playlistId|id)["']\s*[:=]\s*["']?(\d{5,15})/i,
+    /\/playlist\/(\d{5,15})/i,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (match) {
+      return Number(match[1]);
+    }
+  }
+  throw new Error("没有从 QQ 音乐分享链接中识别到歌单 ID。");
+}
+
+async function getQqPlaylistOrder(playlistId) {
+  const apiUrl =
+    "https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg" +
+    `?type=1&json=1&utf8=1&onlysong=0&disstid=${encodeURIComponent(playlistId)}&format=json&g_tk=5381`;
+  const response = await fetch(apiUrl, {
+    headers: QQ_HEADERS,
+    redirect: "follow",
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!response.ok) {
+    throw new Error(`读取 QQ 音乐歌单失败（HTTP ${response.status}）。`);
+  }
+  const data = await response.json();
+  const playlist = data && Array.isArray(data.cdlist) ? data.cdlist[0] : null;
+  if (!playlist || !Array.isArray(playlist.songlist)) {
+    throw new Error("读取 QQ 音乐歌单失败，歌单可能已删除或没有公开访问权限。");
+  }
+
+  const orderedTracks = playlist.songlist.map((song, index) => {
+    const albumMid = String(song.albummid || song.album?.mid || "");
+    const coverUrl = albumMid
+      ? `https://y.qq.com/music/photo_new/T002R800x800M000${albumMid}.jpg?max_age=2592000`
+      : "";
+    return {
+      id: Number(song.songid || song.id || 0),
+      addedAt: null,
+      index: index + 1,
+      metadata: {
+        name: String(song.songname || song.name || `歌曲 ${index + 1}`),
+        artists: Array.isArray(song.singer)
+          ? song.singer.map((artist) => String(artist.name || "")).filter(Boolean)
+          : [],
+        album: String(song.albumname || song.album?.name || ""),
+        coverUrl,
+      },
+    };
+  });
+  return {
+    id: Number(playlist.disstid || playlistId),
+    provider: "qq",
+    name: String(playlist.dissname || "QQ 音乐歌单"),
+    trackCount: orderedTracks.length,
+    coverUrl:
+      String(playlist.picurl || "") ||
+      orderedTracks.find((track) => track.metadata.coverUrl)?.metadata.coverUrl ||
+      "",
+    orderedTracks,
+  };
+}
+
+function reorderPlaylist(playlist, order) {
+  if (order !== "desc") {
+    return { ...playlist, sortOrder: "asc" };
+  }
+  return {
+    ...playlist,
+    sortOrder: "desc",
+    orderedTracks: [...playlist.orderedTracks]
+      .reverse()
+      .map((track, index) => ({ ...track, index: index + 1 })),
+  };
+}
+
+async function getPlaylistOrder(source, forceRefresh = false, order = "asc") {
+  const provider = source.provider === "qq" ? "qq" : "netease";
+  const playlistId = Number(source.id);
+  if (!Number.isFinite(playlistId) || playlistId <= 0) {
+    throw new Error("歌单 ID 无效。");
+  }
+
+  const key = `${provider}:${playlistId}`;
+  if (!forceRefresh && state.playlistCache.has(key)) {
+    return reorderPlaylist(state.playlistCache.get(key), order);
+  }
+  const result =
+    provider === "qq"
+      ? await getQqPlaylistOrder(playlistId)
+      : await getNeteasePlaylistOrder(playlistId);
+  state.playlistCache.set(key, result);
+  return reorderPlaylist(result, order);
+}
+
 async function addPublicPlaylist(input) {
-  const playlistId = parsePlaylistId(input);
-  const playlist = await getPlaylistOrder(playlistId, true);
+  const source = detectPlaylistProvider(input);
+  if (source.provider === "qq" && !source.id) {
+    source.id = await resolveQqPlaylistId(source.url);
+  }
+  const playlist = await getPlaylistOrder(source, true);
   const item = {
     id: playlist.id,
+    provider: playlist.provider,
     name: playlist.name,
     trackCount: playlist.trackCount,
     coverUrl: playlist.coverUrl,
     specialType: 0,
     userId: 0,
     owned: false,
-    creator: "公开歌单",
+    creator: playlist.provider === "qq" ? "QQ 音乐公开歌单" : "网易云公开歌单",
     updateTime: 0,
     public: true,
   };
-  state.publicPlaylists.set(String(playlist.id), item);
+  state.publicPlaylists.set(`${item.provider}:${item.id}`, item);
   state.playlists = [
     item,
-    ...state.playlists.filter((existing) => existing.id !== item.id),
+    ...state.playlists.filter(
+      (existing) =>
+        existing.id !== item.id || existing.provider !== item.provider,
+    ),
   ];
   return item;
 }
@@ -316,22 +248,200 @@ async function addPublicPlaylist(input) {
 async function fetchSongDetails(ids) {
   const songs = new Map();
   const uniqueIds = [...new Set(ids.map(Number).filter((id) => id > 0))];
-  const chunkSize = 50;
-
-  for (let index = 0; index < uniqueIds.length; index += chunkSize) {
-    const chunk = uniqueIds.slice(index, index + chunkSize);
-    const encodedIds = encodeURIComponent(JSON.stringify(chunk));
-    const { data } = await neteaseRequest(
-      `/api/song/detail/?ids=${encodedIds}`,
-    );
-    if (!data || data.code !== 200 || !Array.isArray(data.songs)) {
-      throw new Error("读取歌曲信息失败，请稍后重试。");
+  const missingIds = [];
+  for (const id of uniqueIds) {
+    if (state.songDetailCache.has(id)) {
+      songs.set(id, state.songDetailCache.get(id));
+    } else {
+      missingIds.push(id);
     }
-    for (const song of data.songs) {
-      songs.set(Number(song.id), song);
+  }
+  if (missingIds.length === 0) {
+    return songs;
+  }
+
+  const chunkSize = 200;
+  const chunks = [];
+
+  for (let index = 0; index < missingIds.length; index += chunkSize) {
+    chunks.push(missingIds.slice(index, index + chunkSize));
+  }
+
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+    const chunk = chunks[chunkIndex];
+    let lastMessage = "";
+    let chunkSongs = null;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const encodedIds = encodeURIComponent(
+        JSON.stringify(chunk.map((id) => ({ id }))),
+      );
+      const { data } = await neteaseRequest(
+        `/api/v3/song/detail?c=${encodedIds}`,
+      );
+      if (data && data.code === 200 && Array.isArray(data.songs)) {
+        const privileges = new Map(
+          (data.privileges || []).map((item) => [Number(item.id), item]),
+        );
+        chunkSongs = data.songs.map((song) => ({
+          ...song,
+          privilege: privileges.get(Number(song.id)) || null,
+        }));
+        break;
+      }
+      lastMessage =
+        (data && (data.message || data.msg)) ||
+        (data && data.code ? `网易云返回代码 ${data.code}` : "响应格式异常");
+      const waitMs = Math.min(1000 * 2 ** attempt, 6000);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+
+    if (!chunkSongs) {
+      throw new Error(`读取歌曲信息失败：${lastMessage || "请稍后重试"}`);
+    }
+    for (const song of chunkSongs) {
+      const songId = Number(song.id);
+      songs.set(songId, song);
+      state.songDetailCache.set(songId, song);
+    }
+    if (chunkIndex < chunks.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+
+  for (const id of missingIds) {
+    if (!songs.has(id) && state.songDetailCache.has(id)) {
+      songs.set(id, state.songDetailCache.get(id));
     }
   }
   return songs;
+}
+
+function getSongCoverUrl(song) {
+  return (
+    (song && song.al && song.al.picUrl) ||
+    (song && song.album && song.album.picUrl) ||
+    ""
+  );
+}
+
+function analyzeSongAvailability(song) {
+  const status = Number(song && song.status != null ? song.status : 0);
+  const fee = Number(song && song.fee != null ? song.fee : 0);
+  const noCopyrightRcmd =
+    song && song.noCopyrightRcmd && typeof song.noCopyrightRcmd === "object"
+      ? song.noCopyrightRcmd
+      : null;
+  const privilege = song && song.privilege ? song.privilege : null;
+  const privilegeStatus = Number(privilege && privilege.st);
+
+  if (status !== 0 || noCopyrightRcmd || privilegeStatus < 0) {
+    return {
+      availability: "unavailable",
+      availabilityLabel: "无版权/下架",
+      availabilityReason:
+        (noCopyrightRcmd && noCopyrightRcmd.typeDesc) ||
+        "歌曲当前无法播放",
+    };
+  }
+  if (fee > 0) {
+    return {
+      availability: "restricted",
+      availabilityLabel: "VIP/付费",
+      availabilityReason: "播放可能受账号权益限制",
+    };
+  }
+  return {
+    availability: "available",
+    availabilityLabel: "正常",
+    availabilityReason: "",
+  };
+}
+
+function analyzeQqPlaylist(playlist) {
+  const tracks = playlist.orderedTracks.map((track) => ({
+    index: track.index,
+    id: track.id,
+    addedAt: null,
+    name: track.metadata.name,
+    artists: track.metadata.artists,
+    album: track.metadata.album,
+    availability: track.metadata.coverUrl ? "available" : "unavailable",
+    availabilityLabel: track.metadata.coverUrl ? "封面可下载" : "无封面",
+    availabilityReason: "封面下载与音频付费状态无关",
+    canDownloadCover: Boolean(track.metadata.coverUrl),
+  }));
+  return {
+    id: playlist.id,
+    provider: "qq",
+    name: playlist.name,
+    trackCount: playlist.trackCount,
+    coverUrl: playlist.coverUrl,
+    summary: {
+      total: tracks.length,
+      available: tracks.filter((track) => track.canDownloadCover).length,
+      restricted: 0,
+      unavailable: tracks.filter((track) => !track.canDownloadCover).length,
+      missingCover: tracks.filter((track) => !track.canDownloadCover).length,
+    },
+    oldestAddedAt: null,
+    newestAddedAt: null,
+    tracks,
+  };
+}
+
+async function analyzePlaylist(playlist) {
+  if (playlist.provider === "qq") {
+    return analyzeQqPlaylist(playlist);
+  }
+  const songs = await fetchSongDetails(
+    playlist.orderedTracks.map((track) => track.id),
+  );
+  const tracks = playlist.orderedTracks.map((track) => {
+    const song = songs.get(Number(track.id));
+    const availability = analyzeSongAvailability(song);
+    const coverUrl = getSongCoverUrl(song);
+    return {
+      index: track.index,
+      id: track.id,
+      addedAt: track.addedAt,
+      name: song ? song.name : `歌曲 ${track.id}`,
+      artists: song
+        ? (song.ar || song.artists || []).map((artist) => artist.name).filter(Boolean)
+        : [],
+      album: song ? (song.al || song.album || {}).name || "" : "",
+      ...availability,
+      canDownloadCover: Boolean(coverUrl),
+    };
+  });
+
+  const summary = {
+    total: tracks.length,
+    available: tracks.filter((track) => track.availability === "available").length,
+    restricted: tracks.filter((track) => track.availability === "restricted").length,
+    unavailable: tracks.filter((track) => track.availability === "unavailable").length,
+    missingCover: tracks.filter((track) => !track.canDownloadCover).length,
+  };
+  const dated = tracks.filter((track) => track.addedAt);
+  const oldestAddedAt =
+    dated.length > 0
+      ? Math.min(...dated.map((track) => Number(track.addedAt)))
+      : null;
+  const newestAddedAt =
+    dated.length > 0
+      ? Math.max(...dated.map((track) => Number(track.addedAt)))
+      : null;
+
+  return {
+    id: playlist.id,
+    name: playlist.name,
+    trackCount: playlist.trackCount,
+    coverUrl: playlist.coverUrl,
+    summary,
+    oldestAddedAt,
+    newestAddedAt,
+    tracks,
+  };
 }
 
 function addJobLog(job, level, message) {
@@ -361,17 +471,40 @@ function publicJob(job) {
   };
 }
 
-async function resolveOutputDirectory(requested, playlistName) {
-  const fallback = path.join(
-    __dirname,
-    "downloads",
-    `${sanitizeFileName(playlistName, "网易云歌单")}_封面`,
+function getDefaultOutputDirectory(playlistName) {
+  return path.resolve(
+    path.join(
+      __dirname,
+      "downloads",
+      `${sanitizeFileName(playlistName, "音乐歌单")}_封面`,
+    ),
   );
-  const value = String(requested || "").trim();
+}
+
+async function resolveOutputDirectory(requested, playlistName) {
+  const fallback = getDefaultOutputDirectory(playlistName);
+  const value = normalizeOutputPathInput(requested);
   if (!value) {
-    return path.resolve(fallback);
+    return fallback;
   }
   return path.isAbsolute(value) ? path.normalize(value) : path.resolve(__dirname, value);
+}
+
+async function ensureWritableDirectory(directory) {
+  await fsp.mkdir(directory, { recursive: true });
+  const probePath = path.join(
+    directory,
+    `.music-cover-write-test-${process.pid}-${Date.now()}`,
+  );
+  try {
+    await fsp.writeFile(probePath, "ok", { flag: "wx" });
+  } catch {
+    throw new Error(
+      `保存目录没有写入权限：${directory}。请更换目录，或手动双击 start.cmd 以普通用户权限运行程序。`,
+    );
+  } finally {
+    await fsp.rm(probePath, { force: true }).catch(() => {});
+  }
 }
 
 async function fileExists(filePath) {
@@ -423,7 +556,7 @@ function extensionForImageType(contentType, buffer) {
   return extensions[normalized] || ".jpg";
 }
 
-async function downloadImage(url, targetPath, overwrite) {
+async function downloadImage(url, targetPath, overwrite, headers = BASE_HEADERS) {
   const targetExtension = path.extname(targetPath);
   const targetStem = targetExtension
     ? targetPath.slice(0, -targetExtension.length)
@@ -441,7 +574,7 @@ async function downloadImage(url, targetPath, overwrite) {
   }
 
   const response = await fetch(url, {
-    headers: BASE_HEADERS,
+    headers,
     redirect: "follow",
     signal: AbortSignal.timeout(45000),
   });
@@ -475,14 +608,17 @@ async function downloadImage(url, targetPath, overwrite) {
 
 async function runDownloadJob(job) {
   job.status = "running";
-  addJobLog(job, "info", "正在读取歌单并计算最新加入顺序...");
+  addJobLog(job, "info", "正在读取歌单并整理封面顺序...");
 
-  const playlist = await getPlaylistOrder(job.playlistId);
+  const playlist = await getPlaylistOrder({
+    provider: job.playlistProvider,
+    id: job.playlistId,
+  }, false, job.sortOrder);
   const selectedIndices = parseSelection(job.selection, playlist.orderedTracks.length);
   job.total = selectedIndices.length;
   const selectedTracks = selectedIndices.map((index) => {
     const item = playlist.orderedTracks[index - 1];
-    return { index, id: item.id, addedAt: item.addedAt };
+    return { ...item, index };
   });
 
   addJobLog(
@@ -491,7 +627,10 @@ async function runDownloadJob(job) {
     `已选择 ${selectedTracks.length} 首歌曲，准备读取歌曲信息。`,
   );
 
-  const songs = await fetchSongDetails(selectedTracks.map((track) => track.id));
+  const songs =
+    playlist.provider === "netease"
+      ? await fetchSongDetails(selectedTracks.map((track) => track.id))
+      : new Map();
   let cursor = 0;
   const workerCount = Math.min(4, selectedTracks.length);
 
@@ -504,38 +643,48 @@ async function runDownloadJob(job) {
       }
 
       const item = selectedTracks[position];
-      const song = songs.get(Number(item.id));
-      job.current = `${item.index}. ${song ? song.name : `歌曲 ${item.id}`}`;
+      const song =
+        playlist.provider === "netease" ? songs.get(Number(item.id)) : null;
+      const metadata =
+        playlist.provider === "qq"
+          ? item.metadata
+          : {
+              name: song ? song.name : "",
+              artists: song ? (song.ar || song.artists || []).map((artist) => artist.name) : [],
+              album: song ? (song.al || song.album || {}).name || "" : "",
+              coverUrl: song ? getSongCoverUrl(song) : "",
+            };
+      job.current = `${item.index}. ${metadata.name || `歌曲 ${item.id}`}`;
 
-      if (!song) {
+      if (!metadata.name) {
         job.failed += 1;
         job.completed += 1;
         addJobLog(job, "error", `${item.index}: 没有读取到歌曲信息。`);
         continue;
       }
 
-      const picUrl =
-        (song.al && song.al.picUrl) ||
-        (song.album && song.album.picUrl) ||
-        "";
+      const picUrl = metadata.coverUrl;
       if (!picUrl) {
         job.failed += 1;
         job.completed += 1;
-        addJobLog(job, "error", `${item.index}: ${song.name} 没有可用的封面。`);
+        addJobLog(job, "error", `${item.index}: ${metadata.name} 没有可用的封面。`);
         continue;
       }
 
       const fileName = formatFileName(item.index, {
-        name: song.name,
-        artists: song.ar || song.artists || [],
+        name: metadata.name,
+        artists: metadata.artists.map((name) => ({ name })),
       });
       const targetPath = path.join(job.downloadDir, fileName);
 
       try {
         const result = await downloadImage(
-          buildCoverUrl(picUrl, job.imageSize),
+          playlist.provider === "qq"
+            ? picUrl
+            : buildCoverUrl(picUrl, job.imageSize),
           targetPath,
           job.overwrite,
+          playlist.provider === "qq" ? QQ_HEADERS : BASE_HEADERS,
         );
         const savedName = path.basename(result.filePath);
         if (result.outcome === "skipped") {
@@ -574,17 +723,34 @@ async function runDownloadJob(job) {
 
 async function createDownloadJob(input) {
   const playlistId = Number(input.playlistId);
+  const playlistProvider = input.playlistProvider === "qq" ? "qq" : "netease";
   if (!Number.isFinite(playlistId) || playlistId <= 0) {
     throw new Error("请选择要下载的歌单。");
   }
 
-  const playlist = await getPlaylistOrder(playlistId);
-  const downloadDir = await resolveOutputDirectory(input.outputDir, playlist.name);
-  await fsp.mkdir(downloadDir, { recursive: true });
+  const playlist = await getPlaylistOrder({
+    provider: playlistProvider,
+    id: playlistId,
+  }, false, input.sortOrder === "desc" ? "desc" : "asc");
+  let downloadDir = await resolveOutputDirectory(input.outputDir, playlist.name);
+  let fallbackUsed = false;
+  try {
+    await ensureWritableDirectory(downloadDir);
+  } catch (error) {
+    const fallback = getDefaultOutputDirectory(playlist.name);
+    if (fallback === downloadDir) {
+      throw error;
+    }
+    downloadDir = fallback;
+    fallbackUsed = true;
+    await ensureWritableDirectory(downloadDir);
+  }
 
   const job = {
     id: crypto.randomUUID(),
     playlistId,
+    playlistProvider,
+    sortOrder: input.sortOrder === "desc" ? "desc" : "asc",
     selection: {
       mode: input.mode === "range" ? "range" : "indices",
       start: input.start,
@@ -596,6 +762,7 @@ async function createDownloadJob(input) {
       : "1080",
     overwrite: Boolean(input.overwrite),
     downloadDir,
+    fallbackUsed,
     status: "queued",
     total: 0,
     completed: 0,
@@ -607,6 +774,13 @@ async function createDownloadJob(input) {
     logs: [],
   };
   state.jobs.set(job.id, job);
+  if (fallbackUsed) {
+    addJobLog(
+      job,
+      "warning",
+      `指定保存目录当前不可写（可能因为程序运行在受限环境，或目录受 Windows 受控文件夹保护），已自动改用 ${downloadDir}。如需保存到原目录，请关闭当前服务并手动双击 start.cmd 启动。`,
+    );
+  }
   runDownloadJob(job).catch((error) => {
     job.status = "failed";
     job.current = "";
@@ -645,8 +819,11 @@ const MIME_TYPES = {
   ".ico": "image/x-icon",
   ".js": "text/javascript",
   ".json": "application/json",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
   ".png": "image/png",
   ".svg": "image/svg+xml",
+  ".webp": "image/webp",
 };
 
 async function serveStatic(requestPath, response) {
@@ -663,7 +840,8 @@ async function serveStatic(requestPath, response) {
     response.writeHead(200, {
       "Content-Type": `${contentType}; charset=utf-8`,
       "Content-Length": data.length,
-      "Cache-Control": "no-cache",
+      "Cache-Control": "no-store, max-age=0",
+      Pragma: "no-cache",
     });
     response.end(data);
   } catch (error) {
@@ -683,40 +861,14 @@ async function handleApi(request, response, pathname) {
 
   if (request.method === "GET" && pathname === "/api/session") {
     jsonResponse(response, 200, {
-      loggedIn: Boolean(state.profile),
-      profile: state.profile,
-      loginStatus: state.loginStatus,
       playlistCount: state.playlists.length,
       readOnly: true,
     });
     return true;
   }
 
-  if (request.method === "POST" && pathname === "/api/login/start") {
-    jsonResponse(response, 200, await startLogin());
-    return true;
-  }
-
-  if (request.method === "GET" && pathname === "/api/login/poll") {
-    jsonResponse(response, 200, await pollLogin());
-    return true;
-  }
-
-  if (request.method === "POST" && pathname === "/api/logout") {
-    state.cookies = [];
-    state.profile = null;
-    state.playlists = [...state.publicPlaylists.values()];
-    state.playlistCache.clear();
-    state.loginKey = "";
-    state.loginStatus = "idle";
-    jsonResponse(response, 200, { ok: true });
-    return true;
-  }
-
   if (request.method === "GET" && pathname === "/api/playlists") {
-    const playlists =
-      state.playlists.length > 0 ? state.playlists : await fetchPlaylists();
-    jsonResponse(response, 200, { playlists });
+    jsonResponse(response, 200, { playlists: state.playlists });
     return true;
   }
 
@@ -727,33 +879,34 @@ async function handleApi(request, response, pathname) {
     return true;
   }
 
-  const previewMatch = /^\/api\/playlists\/(\d+)\/preview$/.exec(pathname);
+  const previewMatch = /^\/api\/playlists\/(netease|qq)\/(\d+)\/preview$/.exec(pathname);
   if (request.method === "GET" && previewMatch) {
-    const playlist = await getPlaylistOrder(Number(previewMatch[1]), true);
+    const requestUrl = new URL(request.url, "http://localhost");
+    const sortOrder = requestUrl.searchParams.get("order") === "desc" ? "desc" : "asc";
+    const playlist = await getPlaylistOrder(
+      { provider: previewMatch[1], id: Number(previewMatch[2]) },
+      true,
+      sortOrder,
+    );
     const previewCount = Math.min(
-      Math.max(Number(new URL(request.url, "http://localhost").searchParams.get("count")) || 20, 1),
+      Math.max(Number(requestUrl.searchParams.get("count")) || 20, 1),
       100,
     );
-    const previewTracks = playlist.orderedTracks.slice(0, previewCount);
-    const songs = await fetchSongDetails(previewTracks.map((track) => track.id));
+    const analysis = await analyzePlaylist(playlist);
     jsonResponse(response, 200, {
       id: playlist.id,
+      provider: playlist.provider,
+      sortOrder,
       name: playlist.name,
       trackCount: playlist.trackCount,
       coverUrl: playlist.coverUrl,
-      preview: previewTracks.map((track) => {
-        const song = songs.get(Number(track.id));
-        return {
-          index: track.index,
-          id: track.id,
-          addedAt: track.addedAt,
-          name: song ? song.name : `歌曲 ${track.id}`,
-          artists: song
-            ? (song.ar || song.artists || []).map((artist) => artist.name).filter(Boolean)
-            : [],
-          album: song && song.al ? song.al.name : "",
-        };
-      }),
+      summary: analysis.summary,
+      oldestAddedAt: analysis.oldestAddedAt,
+      newestAddedAt: analysis.newestAddedAt,
+      preview: analysis.tracks.slice(0, previewCount),
+      unavailableTracks: analysis.tracks.filter(
+        (track) => track.availability === "unavailable",
+      ),
     });
     return true;
   }
@@ -850,7 +1003,147 @@ function listen(server, port) {
   });
 }
 
+function findWindowsBrowser() {
+  const candidates = [
+    path.join(
+      process.env["ProgramFiles(x86)"] || "",
+      "Microsoft",
+      "Edge",
+      "Application",
+      "msedge.exe",
+    ),
+    path.join(
+      process.env.ProgramFiles || "",
+      "Microsoft",
+      "Edge",
+      "Application",
+      "msedge.exe",
+    ),
+    path.join(
+      process.env.ProgramFiles || "",
+      "Google",
+      "Chrome",
+      "Application",
+      "chrome.exe",
+    ),
+    path.join(
+      process.env["ProgramFiles(x86)"] || "",
+      "Google",
+      "Chrome",
+      "Application",
+      "chrome.exe",
+    ),
+  ];
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate));
+}
+
+function openBrowser(url) {
+  if (process.platform === "win32") {
+    const browser = findWindowsBrowser();
+    if (browser) {
+      const browserProfile = path.join(
+        process.env.TEMP || __dirname,
+        "netease-cover-downloader-browser",
+      );
+      spawn(
+        browser,
+        [
+          "--no-first-run",
+          "--no-default-browser-check",
+          "--no-proxy-server",
+          "--proxy-bypass-list=127.0.0.1;localhost",
+          `--user-data-dir=${browserProfile}`,
+          url,
+        ],
+        {
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+        },
+      ).unref();
+      return;
+    }
+    spawn("cmd.exe", ["/c", "start", "", url], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    }).unref();
+    return;
+  }
+
+  if (process.platform === "darwin") {
+    spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
+    return;
+  }
+  spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
+}
+
+function runPowerShell(script, extraEnv = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-STA", "-Command", script],
+      {
+        env: { ...process.env, ...extraEnv },
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || "PowerShell 命令执行失败。"));
+        return;
+      }
+      resolve(stdout.trim());
+    });
+  });
+}
+
+async function showLegalPrompt() {
+  if (
+    process.platform !== "win32" ||
+    process.env.NCD_SKIP_LEGAL_PROMPT === "1"
+  ) {
+    return true;
+  }
+
+  const legalText = [
+    "本软件仅供用户本人在自己的设备上，进行个人学习、备份和低频研究使用。",
+    "",
+    "禁止公开部署、在线提供服务、批量分发、销售、商业使用，或以本软件实质性替代网易云音乐、QQ 音乐等平台服务。",
+    "",
+    "本软件与网易云音乐、QQ 音乐等平台官方无任何关联，不提供音频、VIP 内容或付费内容下载。",
+    "",
+    "继续使用即表示你理解并自行承担相关合规风险。",
+    "",
+    "是否确认仅用于个人本地合规用途并继续？",
+  ].join("\n");
+  const script = [
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false",
+    "$result = [System.Windows.Forms.MessageBox]::Show($env:NCD_LEGAL_TEXT, '使用前须知 - 音乐封面下载器', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning, [System.Windows.Forms.MessageBoxDefaultButton]::Button2)",
+    "if ($result -eq [System.Windows.Forms.DialogResult]::Yes) { [Console]::Out.Write('YES') } else { [Console]::Out.Write('NO') }",
+  ].join("; ");
+  const result = await runPowerShell(script, { NCD_LEGAL_TEXT: legalText });
+  return result === "YES";
+}
+
 async function startServer() {
+  const acceptedLegalNotice = await showLegalPrompt();
+  if (!acceptedLegalNotice) {
+    console.log("已取消启动：用户未确认个人本地合规使用边界。");
+    return;
+  }
+
   const portArgumentIndex = process.argv.indexOf("--port");
   const requestedPort =
     portArgumentIndex >= 0 ? Number(process.argv[portArgumentIndex + 1]) : 38471;
@@ -871,21 +1164,11 @@ async function startServer() {
   }
 
   const url = `http://127.0.0.1:${activePort}`;
-  console.log(`网易云封面下载器已启动：${url}`);
+  console.log(`音乐封面下载器已启动：${url}`);
   console.log("按 Ctrl+C 可以关闭程序。");
 
   if (process.argv.includes("--open")) {
-    if (process.platform === "win32") {
-      spawn("cmd.exe", ["/c", "start", "", url], {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-      }).unref();
-    } else if (process.platform === "darwin") {
-      spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
-    } else {
-      spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
-    }
+    openBrowser(url);
   }
 }
 

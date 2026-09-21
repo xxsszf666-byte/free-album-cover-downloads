@@ -26,12 +26,9 @@ const WINDOWS_RESERVED_NAMES = new Set([
 ]);
 
 const NETEASE_READ_ONLY_ENDPOINTS = new Set([
-  "/api/login/qrcode/unikey",
-  "/api/login/qrcode/client/login",
-  "/api/nuser/account/get",
-  "/api/user/playlist/",
   "/api/v6/playlist/detail",
   "/api/song/detail/",
+  "/api/v3/song/detail",
 ]);
 
 function assertReadOnlyNeteaseEndpoint(pathname) {
@@ -42,7 +39,7 @@ function assertReadOnlyNeteaseEndpoint(pathname) {
 }
 
 function sortTrackIdsByAdded(trackIds) {
-  return (Array.isArray(trackIds) ? trackIds : [])
+  const normalized = (Array.isArray(trackIds) ? trackIds : [])
     .map((item, originalIndex) => {
       const normalized =
         typeof item === "object" && item !== null ? item : { id: item };
@@ -53,14 +50,19 @@ function sortTrackIdsByAdded(trackIds) {
         originalIndex,
       };
     })
-    .filter((item) => Number.isFinite(item.id) && item.id > 0)
+    .filter((item) => Number.isFinite(item.id) && item.id > 0);
+
+  const dated = normalized
+    .filter((item) => item.addedAt > 0)
     .sort((left, right) => {
-      if (right.addedAt !== left.addedAt) {
-        return right.addedAt - left.addedAt;
+      if (left.addedAt !== right.addedAt) {
+        return left.addedAt - right.addedAt;
       }
       return left.originalIndex - right.originalIndex;
-    })
-    .map((item, sortIndex) => ({
+    });
+  const undated = normalized.filter((item) => item.addedAt === 0);
+
+  return [...dated, ...undated].map((item, sortIndex) => ({
       id: item.id,
       addedAt: item.addedAt || null,
       index: sortIndex + 1,
@@ -154,6 +156,27 @@ function sanitizeFileName(value, fallback = "未知") {
   return name.slice(0, 100);
 }
 
+function normalizeOutputPathInput(value) {
+  let text = String(value == null ? "" : value).trim();
+  if (
+    text.length >= 2 &&
+    ((text.startsWith('"') && text.endsWith('"')) ||
+      (text.startsWith("'") && text.endsWith("'")))
+  ) {
+    text = text.slice(1, -1).trim();
+  }
+  text = text.replace(/%([^%]+)%/g, (match, name) => process.env[name] || match);
+  if (text === "~") {
+    text = process.env.USERPROFILE || process.env.HOME || text;
+  } else if (text.startsWith("~/") || text.startsWith("~\\")) {
+    const home = process.env.USERPROFILE || process.env.HOME;
+    if (home) {
+      text = path.join(home, text.slice(2));
+    }
+  }
+  return text;
+}
+
 function buildCoverUrl(picUrl, size) {
   const url = String(picUrl || "").trim();
   if (!url) {
@@ -206,11 +229,62 @@ function parsePlaylistId(value) {
   throw new Error("没有识别到歌单 ID，请粘贴网易云歌单链接或纯数字 ID。");
 }
 
+function parseQqPlaylistId(value) {
+  const text = String(value == null ? "" : value).trim();
+  const pathMatch = /\/playlist\/(\d{5,15})(?:[/?#]|$)/.exec(text);
+  if (pathMatch) {
+    return Number(pathMatch[1]);
+  }
+  const queryMatch = /[?&#](?:id|disstid)=(\d{5,15})(?:&|$)/.exec(text);
+  if (queryMatch) {
+    return Number(queryMatch[1]);
+  }
+  return null;
+}
+
+function detectPlaylistProvider(value) {
+  const text = String(value == null ? "" : value).trim();
+  if (!text) {
+    throw new Error("请粘贴网易云音乐或 QQ 音乐歌单分享链接。");
+  }
+  if (/^\d{5,15}$/.test(text)) {
+    return { provider: "netease", id: Number(text), url: "" };
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(text);
+  } catch {
+    throw new Error("没有识别到歌单链接，请粘贴完整的分享地址。");
+  }
+  const hostname = parsedUrl.hostname.toLowerCase();
+
+  if (hostname === "qq.com" || hostname.endsWith(".qq.com")) {
+    return {
+      provider: "qq",
+      id: parseQqPlaylistId(text),
+      url: text,
+    };
+  }
+  if (hostname === "music.163.com" || hostname.endsWith(".music.163.com")) {
+    return {
+      provider: "netease",
+      id: parsePlaylistId(text),
+      url: text,
+    };
+  }
+
+  throw new Error("目前只支持网易云音乐和 QQ 音乐的歌单分享链接。");
+}
+
 module.exports = {
   assertReadOnlyNeteaseEndpoint,
   buildCoverUrl,
+  detectPlaylistProvider,
   formatFileName,
+  normalizeOutputPathInput,
   parsePlaylistId,
+  parseQqPlaylistId,
   parseSelection,
   sanitizeFileName,
   sortTrackIdsByAdded,

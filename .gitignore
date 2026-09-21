@@ -1,5 +1,6 @@
 node_modules/
 downloads/
+.browser-profile/
 coverage/
 *.log
 npm-debug.log*

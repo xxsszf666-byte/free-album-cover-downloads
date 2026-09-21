@@ -1,15 +1,24 @@
-# NetEase Cloud Music Cover Downloader
+# Music Cover Downloader
 
-A dependency-free local web tool that downloads album covers from NetEase Cloud Music playlists.
+A dependency-free local web tool that downloads album covers from public NetEase Cloud Music and QQ Music playlist share links.
 
 ## Features
 
-- QR-code login with the official NetEase Cloud Music login page.
-- Public playlist mode without login.
-- Sorts tracks by their `at` added timestamp; the newest track is index `1`.
+- Public playlist share links only; no account login and no cookies.
+- NetEase Cloud Music tracks are sorted by their `at` timestamp, oldest first.
+- QQ Music tracks follow the public playlist response order.
 - Supports ranges such as `1-100` or selections such as `1,3,5-8`.
 - Supports 640px, 1080px, and original cover sizes.
-- Read-only NetEase API allowlist and `GET`-only requests.
+- NetEase read-only API allowlist and public QQ Music playlist endpoints.
+
+Supported platforms:
+
+| Platform | Playlist share link | Cover download | Audio download |
+| --- | --- | --- | --- |
+| NetEase Cloud Music | Yes | Yes | No |
+| QQ Music | Yes | Yes | No |
+
+Kugou, Kuwo, Migu, and other services are not implemented yet.
 
 ## Quick Start
 
@@ -29,7 +38,7 @@ The local UI is served at `http://127.0.0.1:38471`.
 
 ## Read-Only Guarantee
 
-The tool only calls the official login status, account profile, playlist, playlist detail, and song detail endpoints. It does not add, delete, edit, favorite, follow, or otherwise modify account data.
+The tool only calls public playlist and metadata endpoints. It does not log in, read cookies, add, delete, edit, favorite, follow, or otherwise modify account data.
 
 See `SECURITY.md` and `docs/architecture.md` for details.
 

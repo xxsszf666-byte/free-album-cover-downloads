@@ -3,9 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
-    <title>网易云封面下载器</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#171716" />
+    <title>音乐封面下载器</title>
+    <link rel="stylesheet" href="/styles.css?v=20260921-9" />
   </head>
   <body>
     <header class="topbar">
@@ -17,11 +18,11 @@
           </svg>
         </span>
         <div>
-          <h1>网易云封面下载器</h1>
-          <p>按歌曲加入歌单的时间倒序编号，最新加入为 1</p>
+          <h1>音乐封面下载器</h1>
+          <p>支持网易云音乐与 QQ 音乐分享歌单</p>
         </div>
       </div>
-      <div class="account-area" id="accountArea">
+      <div class="account-area">
         <span class="readonly-badge" title="程序只读取歌单和封面，不会修改账号内容">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3z"></path>
@@ -29,64 +30,36 @@
           </svg>
           只读
         </span>
-        <span class="status-dot" id="accountDot"></span>
-        <span id="accountText">尚未登录</span>
-        <button class="button button-quiet button-small is-hidden" id="logoutButton" type="button">
-          退出
-        </button>
       </div>
     </header>
 
     <main class="app-shell">
       <aside class="sidebar">
-        <section class="sidebar-section login-section">
+        <section class="sidebar-section source-section">
           <div class="section-heading">
             <div>
-              <p class="eyebrow">账号</p>
-              <h2>扫码登录</h2>
+              <p class="eyebrow">歌单来源</p>
+              <h2>粘贴分享链接</h2>
             </div>
-            <span class="state-badge" id="loginBadge">未登录</span>
           </div>
 
-          <p class="helper-text" id="loginHelp">
-            点击后会在浏览器打开网易云官方扫码页。请选择“网易云音乐 App 扫码”，不要使用微信扫码或网页账号密码登录。
+          <p class="helper-text">
+            只支持公开歌单分享链接，不需要登录，也不会读取账号 Cookie。
           </p>
 
-          <button class="button button-primary button-wide" id="loginButton" type="button">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-              <rect width="5" height="5" x="3" y="3" rx="1"></rect>
-              <rect width="5" height="5" x="16" y="3" rx="1"></rect>
-              <rect width="5" height="5" x="3" y="16" rx="1"></rect>
-              <path d="M21 16h-3a2 2 0 0 0-2 2v3"></path>
-              <path d="M21 21v.01"></path>
-              <path d="M12 7v3a2 2 0 0 1-2 2H7"></path>
-              <path d="M3 12h.01"></path>
-              <path d="M12 3h.01"></path>
-              <path d="M12 16v.01"></path>
-              <path d="M16 12h1"></path>
-              <path d="M21 12v.01"></path>
-              <path d="M12 21v-1"></path>
-            </svg>
-            <span id="loginButtonText">获取登录二维码</span>
-          </button>
-          <a class="text-link is-hidden" id="loginLink" href="#" target="_blank" rel="noreferrer">
-            浏览器没有打开？点这里打开扫码页
-          </a>
-
           <div class="public-playlist-import">
-            <div class="divider-label"><span>或者</span></div>
             <label class="field">
-              <span>公开歌单链接或 ID</span>
+              <span>网易云音乐 / QQ 音乐分享链接</span>
               <input
                 id="publicPlaylistInput"
                 type="text"
-                placeholder="粘贴“我喜欢的音乐”或公开歌单链接"
+                placeholder="粘贴公开歌单分享地址"
               />
             </label>
-            <button class="button button-wide" id="addPublicPlaylistButton" type="button">
-              添加公开歌单
+            <button class="button button-primary button-wide" id="addPublicPlaylistButton" type="button">
+              识别并添加歌单
             </button>
-            <p class="field-hint">无需登录，只读取公开歌单和封面，不会修改账号内容。</p>
+            <p class="field-hint">支持 NetEase 和 QQ Music 分享链接，仅读取公开歌单元数据与封面。</p>
           </div>
         </section>
 
@@ -123,7 +96,7 @@
                   <circle cx="18" cy="16" r="3"></circle>
                 </svg>
               </span>
-              <p>登录后会在这里显示你的歌单</p>
+              <p>添加歌单后会显示在这里</p>
             </div>
           </div>
         </section>
@@ -138,8 +111,8 @@
               <circle cx="18" cy="16" r="3"></circle>
             </svg>
           </span>
-          <h2>先从左侧选择一个歌单</h2>
-          <p>程序会读取歌单中的加入时间，并把最新加入的歌曲排在第 1 位。</p>
+          <h2>先粘贴一个歌单分享链接</h2>
+          <p>网易云音乐按加入时间从早到晚编号；QQ 音乐按分享歌单返回顺序编号。</p>
         </div>
 
         <div class="workspace-content is-hidden" id="workspaceContent">
@@ -157,9 +130,55 @@
               <p>
                 <span id="selectedTrackCount">0</span> 首歌曲
                 <span class="meta-divider">·</span>
-                序号按加入时间倒序排列
+                <span id="orderDescription">序号按加入时间从早到晚排列</span>
               </p>
             </div>
+          </section>
+
+          <section class="analysis-section">
+            <div class="control-heading">
+              <div>
+                <p class="eyebrow">识别结果</p>
+                <h3>共识别 <span id="analysisTotal">0</span> 首音乐</h3>
+                <p id="analysisDescription">版权状态根据网易云返回的歌曲状态和 noCopyrightRcmd 字段判断。</p>
+              </div>
+            </div>
+            <div class="sort-control">
+              <span>排序方式</span>
+              <div class="sort-options" id="sortControl" role="group" aria-label="歌曲排序方式">
+                <button class="sort-option is-active" data-order="asc" type="button" aria-pressed="true">
+                  从早到晚 / 正序
+                </button>
+                <button class="sort-option" data-order="desc" type="button" aria-pressed="false">
+                  从晚到早 / 倒序
+                </button>
+              </div>
+            </div>
+            <div class="analysis-metrics">
+              <div class="analysis-metric metric-available">
+                <span class="analysis-metric-label">正常</span>
+                <strong id="analysisAvailable">0</strong>
+              </div>
+              <div class="analysis-metric metric-restricted">
+                <span class="analysis-metric-label">VIP / 付费</span>
+                <strong id="analysisRestricted">0</strong>
+              </div>
+              <div class="analysis-metric metric-unavailable">
+                <span class="analysis-metric-label">无版权 / 下架</span>
+                <strong id="analysisUnavailable">0</strong>
+              </div>
+              <div class="analysis-metric metric-cover">
+                <span class="analysis-metric-label">缺少封面</span>
+                <strong id="analysisMissingCover">0</strong>
+              </div>
+            </div>
+            <p class="analysis-note">
+              无版权歌曲不能播放或下载音频，但只要网易云仍返回封面地址，本项目就可以下载封面。
+            </p>
+            <button class="button button-quiet is-hidden" id="toggleUnavailableButton" type="button">
+              查看无版权歌曲
+            </button>
+            <div class="unavailable-list is-hidden" id="unavailableList"></div>
           </section>
 
           <section class="control-section">
@@ -224,14 +243,15 @@
                   <option value="original">原始尺寸</option>
                 </select>
               </label>
-              <label class="field field-grow">
+              <div class="field field-grow">
                 <span>保存目录</span>
                 <input
                   id="outputDir"
                   type="text"
-                  placeholder="留空则保存到程序目录的 downloads 文件夹"
+                  placeholder="直接粘贴完整保存路径，留空则使用 downloads 目录"
                 />
-              </label>
+                <p class="field-hint">直接复制完整路径粘贴到这里，例如 C:\Users\ASUS\Pictures\音乐封面。</p>
+              </div>
             </div>
             <label class="check-row">
               <input id="overwrite" type="checkbox" />
@@ -242,7 +262,7 @@
           <section class="preview-section">
             <div class="preview-heading">
               <div>
-                <h3>最新加入预览</h3>
+                <h3>最早加入预览</h3>
                 <p>这里显示序号 1 开始的歌曲，确认编号无误后即可下载。</p>
               </div>
             </div>
@@ -253,6 +273,7 @@
                     <th>序号</th>
                     <th>歌曲</th>
                     <th>专辑</th>
+                    <th>版权状态</th>
                     <th>加入时间</th>
                   </tr>
                 </thead>
@@ -302,7 +323,64 @@
       </section>
     </main>
 
+    <div class="donation-modal is-hidden" id="donationModal" role="dialog" aria-modal="true" aria-labelledby="donationTitle">
+      <div class="donation-dialog">
+        <button class="icon-button donation-close" id="donationCloseButton" type="button" title="关闭">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m6 6 12 12"></path>
+            <path d="M18 6 6 18"></path>
+          </svg>
+        </button>
+        <p class="eyebrow">开发不易</p>
+        <h2 id="donationTitle">感谢你的使用</h2>
+        <p class="donation-copy">
+          本项目完全免费开源。如果有帮助，可以自愿、无偿捐赠；不捐赠也可以继续使用全部功能。
+        </p>
+        <img class="donation-qr" src="/reward-qr.jpg" alt="自愿无偿捐赠二维码" />
+        <p class="donation-note">捐赠不代表购买软件，不构成授权或服务对价。</p>
+        <div class="donation-actions">
+          <button class="button button-quiet" id="donationSkipButton" type="button">暂不捐赠，关闭</button>
+          <button class="button button-primary" id="donationDoneButton" type="button">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="legal-modal" id="legalModal" role="dialog" aria-modal="true" aria-labelledby="legalTitle">
+      <div class="legal-dialog">
+        <div class="legal-warning-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M10.3 2.9 1.8 17a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 2.9a2 2 0 0 0-3.4 0Z"></path>
+            <path d="M12 9v4"></path>
+            <path d="M12 17h.01"></path>
+          </svg>
+        </div>
+        <p class="legal-kicker">使用前必须阅读</p>
+        <h2 id="legalTitle">个人本地合规使用声明</h2>
+        <p class="legal-lead">
+          本软件与网易云音乐、QQ 音乐等平台官方无任何关联，仅用于用户本人在自己的设备上读取公开歌单元数据和下载封面。
+        </p>
+        <ul class="legal-list">
+          <li>禁止公开部署、在线提供服务、销售、商业使用或批量分发。</li>
+          <li>禁止使用本软件替代网易云音乐、QQ 音乐等平台服务或批量扩散平台内容。</li>
+          <li>本软件不下载音频、歌词、VIP 内容或任何付费内容。</li>
+          <li>无版权歌曲的音频不能使用；仅在封面地址仍可读取时下载封面。</li>
+          <li>捐赠二维码仅代表自愿无偿捐赠，与软件功能、授权或服务无关。</li>
+          <li>使用者应遵守对应平台服务条款、著作权法和当地法律法规，并自行承担合规责任。</li>
+        </ul>
+        <label class="legal-consent">
+          <input id="legalAgreeCheckbox" type="checkbox" />
+          <span>我已阅读并同意，仅将本软件用于个人本地、低频、非商业用途。</span>
+        </label>
+        <div class="legal-actions">
+          <button class="button button-quiet" id="legalExitButton" type="button">退出</button>
+          <button class="button button-danger" id="legalContinueButton" type="button" disabled>
+            我已知晓，仅限个人本地使用
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div class="toast is-hidden" id="toast" role="status"></div>
-    <script src="/app.js" defer></script>
+    <script src="/app.js?v=20260921-9" defer></script>
   </body>
 </html>

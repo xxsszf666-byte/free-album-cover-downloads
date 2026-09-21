@@ -8,16 +8,13 @@
 - 网易云请求使用固定的只读端点白名单。
 - 所有网易云请求强制使用 `GET`，代码不支持携带请求体。
 - 不调用新增、删除、编辑歌单，不修改收藏、关注或账号设置。
-- 扫码登录 Cookie 只保存在当前 Node.js 进程内存中，不写入配置文件。
+- 不提供扫码登录，不读取或保存账号 Cookie。
+- QQ 音乐只调用公开歌单分享接口，不访问私密歌单或音频资源。
 - 下载过程只会创建用户指定目录和封面图片文件。
 
 网易云只读端点白名单：
 
 ```text
-/api/login/qrcode/unikey
-/api/login/qrcode/client/login
-/api/nuser/account/get
-/api/user/playlist/
 /api/v6/playlist/detail
 /api/song/detail/
 ```

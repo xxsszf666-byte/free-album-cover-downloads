@@ -5,7 +5,9 @@ const assert = require("node:assert/strict");
 const {
   assertReadOnlyNeteaseEndpoint,
   buildCoverUrl,
+  detectPlaylistProvider,
   formatFileName,
+  normalizeOutputPathInput,
   parsePlaylistId,
   parseSelection,
   sanitizeFileName,
@@ -19,6 +21,9 @@ test("allows only the read-only NetEase endpoints", () => {
   assert.doesNotThrow(() =>
     assertReadOnlyNeteaseEndpoint("/api/song/detail/?ids=%5B1%5D"),
   );
+  assert.doesNotThrow(() =>
+    assertReadOnlyNeteaseEndpoint("/api/v3/song/detail?c=%5B%7B%22id%22%3A1%7D%5D"),
+  );
   assert.throws(
     () =>
       assertReadOnlyNeteaseEndpoint(
@@ -28,7 +33,7 @@ test("allows only the read-only NetEase endpoints", () => {
   );
 });
 
-test("sorts tracks by added time descending with stable fallback order", () => {
+test("sorts tracks by added time ascending with unknown dates last", () => {
   const sorted = sortTrackIdsByAdded([
     { id: 11, at: 100 },
     { id: 22, at: 300 },
@@ -39,7 +44,7 @@ test("sorts tracks by added time descending with stable fallback order", () => {
 
   assert.deepEqual(
     sorted.map((item) => item.id),
-    [22, 44, 55, 11, 33],
+    [11, 55, 22, 44, 33],
   );
   assert.deepEqual(
     sorted.map((item) => item.index),
@@ -74,6 +79,19 @@ test("sanitizes Windows file names", () => {
   assert.equal(sanitizeFileName(""), "未知");
 });
 
+test("normalizes quoted output paths and environment variables", () => {
+  assert.equal(
+    normalizeOutputPathInput('"C:\\Users\\ASUS\\Desktop\\新建文件夹"'),
+    "C:\\Users\\ASUS\\Desktop\\新建文件夹",
+  );
+  process.env.MUSIC_COVER_TEST_PATH = "D:\\Covers";
+  assert.equal(
+    normalizeOutputPathInput("%MUSIC_COVER_TEST_PATH%\\Album"),
+    "D:\\Covers\\Album",
+  );
+  delete process.env.MUSIC_COVER_TEST_PATH;
+});
+
 test("builds cover URL with requested size", () => {
   assert.equal(
     buildCoverUrl("http://p1.music.126.net/example.jpg", "1080"),
@@ -105,4 +123,20 @@ test("parses playlist ID from raw ID and common NetEase URLs", () => {
     parsePlaylistId("https://music.163.com/playlist/3778678/123/"),
     3778678,
   );
+});
+
+test("detects NetEase and QQ Music playlist share links", () => {
+  assert.deepEqual(
+    detectPlaylistProvider("https://music.163.com/#/playlist?id=3778678"),
+    { provider: "netease", id: 3778678, url: "https://music.163.com/#/playlist?id=3778678" },
+  );
+  assert.deepEqual(
+    detectPlaylistProvider("https://y.qq.com/n/ryqq/playlist/7283765288"),
+    { provider: "qq", id: 7283765288, url: "https://y.qq.com/n/ryqq/playlist/7283765288" },
+  );
+  assert.deepEqual(detectPlaylistProvider("3778678"), {
+    provider: "netease",
+    id: 3778678,
+    url: "",
+  });
 });
